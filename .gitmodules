@@ -1,0 +1,6 @@
+[submodule "blenderserver"]
+	path = blenderserver
+	url = https://github.com/secosun/blenderserver.git
+[submodule "blenderworker"]
+	path = blenderworker
+	url = https://github.com/secosun/blendermcp.git
