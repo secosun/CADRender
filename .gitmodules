@@ -4,3 +4,6 @@
 [submodule "blenderworker"]
 	path = blenderworker
 	url = https://github.com/secosun/blendermcp.git
+[submodule "renderui"]
+	path = renderui
+	url = https://github.com/secosun/renderui.git
