@@ -1,0 +1,9 @@
+# Local secrets
+.env
+
+# Proxy venv
+.venv-proxy/
+
+# Python
+__pycache__/
+*.py[cod]
