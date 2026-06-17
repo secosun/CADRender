@@ -60,6 +60,7 @@ services:
       - ./blenderserver:/app          # 源码挂载，uvicorn --reload 生效
       - blenderserver_data:/app/data
       - ./outputs:/app/outputs        # 渲染输出
+      - ./blenderworker/blender_mcp_presets:/blender_mcp_presets  # 材质库
     environment:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8000
