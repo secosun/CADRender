@@ -1,0 +1,201 @@
+# CADRender 本地开发环境 — 全容器化 (Blender 除外)
+#
+# 用法:
+#   docker compose -f docker-compose.dev.yml up -d          # 启动所有服务
+#   docker compose -f docker-compose.dev.yml logs -f        # 实时日志
+#   docker compose -f docker-compose.dev.yml down           # 停止
+#
+# 宿主机需要:
+#   1. Blender (headless): blender -b -P blender_launcher.py
+#   2. Node.js (可选): cd renderui && npm run dev
+#
+# blenderworker 在容器内通过 host.docker.internal:19876 连接宿主机 Blender。
+# 如果 Blender 端口改了，设置 BLENDER_PORT 环境变量。
+
+services:
+
+  # ======================================================================
+  # Infrastructure
+  # ======================================================================
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["full", "redis"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles: ["full", "s3"]
+
+  # ======================================================================
+  # blenderserver — FastAPI SaaS 中台
+  # ======================================================================
+
+  blenderserver:
+    build:
+      context: ./blenderserver
+    ports:
+      - "8060:8000"
+    volumes:
+      - ./blenderserver:/app          # 源码挂载，uvicorn --reload 生效
+      - blenderserver_data:/app/data
+      - ./outputs:/app/outputs        # 渲染输出
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8000
+      # 数据库 — SQLite 开发模式 (不改 docker-compose 即可跑)
+      DB_PATH: /app/data/blenderserver.db
+      # 如需 PostgreSQL 取消注释 (需要额外启动 postgres 容器):
+      # DATABASE_URL: postgresql+asyncpg://cadrender:cadrender@postgres:5432/cadrender
+      # 队列
+      QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      # 存储 — MinIO (S3)
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: cadrender
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_UPLOAD_PREFIX: uploads
+      S3_OUTPUT_PREFIX: outputs
+      # Auth (开发用固定密钥)
+      JWT_SECRET: dev-jwt-secret-docker-compose
+      WORKER_CALLBACK_SECRET: dev-secret
+      CORS_ORIGINS: "*"
+      # FreeCAD
+      FREECAD_ENABLED: "true"
+    command: >
+      python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    depends_on:
+      redis:
+        condition: service_started
+    profiles: ["full", "server"]
+
+  # ======================================================================
+  # freecad-worker — 参数化 OBJ 生成
+  # ======================================================================
+
+  freecad-worker:
+    image: amrit3701/freecad-cli:latest
+    # 容器内既有 freecadcmd 又有 Python worker，
+    # 用 direct 模式直接调 freecadcmd，无需 Docker-in-Docker。
+    volumes:
+      - ./blenderworker/src:/app/src
+      - ./blenderworker/freecad_generate.py:/app/freecad_generate.py
+      - freecad_output:/output
+    environment:
+      BLENDERSERVER_URL: http://blenderserver:8000
+      CALLBACK_SECRET: dev-secret
+      WORKER_LABEL: freecad-worker-dev
+      FREECAD_MODE: direct                       # 直接调 freecadcmd（同一容器内）
+      FREECAD_CMD: FreeCADCmd
+      GENERATE_SCRIPT: /app/freecad_generate.py
+      OUTPUT_DIR: /output
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: cadrender
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+    working_dir: /app
+    command: >
+      sh -c "
+        pip3 install httpx boto3 -q &&
+        python3 -m src.freecad_worker.main
+      "
+    depends_on:
+      blenderserver:
+        condition: service_started
+    profiles: ["full", "freecad"]
+
+  # ======================================================================
+  # blenderworker — Blender 渲染调度 (连宿主机 Blender)
+  # ======================================================================
+
+  blenderworker:
+    build:
+      context: ./blenderworker
+      dockerfile: Dockerfile.worker  # slim python + 依赖
+    volumes:
+      - ./blenderworker/src:/app/src
+      - ./outputs:/app/outputs
+    environment:
+      PYTHONPATH: /app/src
+      BLENDERSERVER_URL: http://blenderserver:8000
+      CALLBACK_SECRET: dev-secret
+      WORKER_LABEL: blenderworker-dev
+      WORKER_CONCURRENCY: 1
+      BLENDER_HOST: host.docker.internal   # 连宿主机的 Blender
+      BLENDER_PORT: ${BLENDER_PORT:-19876}
+      RENDER_TIMEOUT: 600
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: cadrender
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      OUTPUT_DIR: /app/outputs
+    working_dir: /app
+    command: >
+      sh -c "
+        sleep 3 &&
+        python -m src.worker_main
+      "
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux 兼容
+    depends_on:
+      blenderserver:
+        condition: service_started
+    profiles: ["full", "blender"]
+
+  # ======================================================================
+  # renderui — Vite 前端 (可选)
+  # ======================================================================
+
+  renderui:
+    image: node:22-alpine
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./renderui:/app
+    working_dir: /app
+    environment:
+      VITE_API_TARGET: http://blenderserver:8000
+    command: >
+      sh -c "
+        npm install &&
+        npm run dev -- --host 0.0.0.0 --port 8050
+      "
+    depends_on:
+      blenderserver:
+        condition: service_started
+    profiles: ["full", "ui"]
+
+
+# ======================================================================
+# Volumes
+# ======================================================================
+
+volumes:
+  minio_data:
+  blenderserver_data:
+  freecad_output:
+  blenderworker_output:
