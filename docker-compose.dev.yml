@@ -61,6 +61,7 @@ services:
       - blenderserver_data:/app/data
       - ./outputs:/app/outputs        # 渲染输出
       - ./blenderworker/blender_mcp_presets:/blender_mcp_presets  # 材质库
+      - ./blenderworker/calibrate_out:/app/calibrate_out  # 校准输出
     environment:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8000
