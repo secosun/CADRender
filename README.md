@@ -133,3 +133,21 @@ docker compose -f docker-compose.dev.yml --profile full up -d
 $env:BLENDER_ADDON_SRC = "blenderworker/src"
 blender -b -P blenderworker/blender_launcher_env.py
 ```
+
+## 功能清单
+
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| 渲染管线（OBJ → 材质 → 灯光 → PNG） | ✅ | `host_pipeline.py` |
+| 材质校准（Optuna TPE + CIEDE2000） | ✅ | `calibrate.py --mode material` |
+| 类目校准（4 阶段 + VLM） | ✅ | `calibrate.py --mode category` |
+| 产品迁移验证 | ✅ | before/after CV 对比 |
+| 场景引擎（6 场景） | ✅ | 灯光/HDRI/合成/背景 |
+| FreeCAD 参数化模板 | ✅ | 模板管理 API |
+| 3D 预览（Three.js） | ✅ | 内置模型实时预览 |
+| 画廊（批量下载/删除） | ✅ | 选择 → 下载/删除 |
+| 支付（Stripe + 支付宝/微信） | ✅ | 代码完备，待验证全链路 |
+| 配额管理 | ✅ | Profile + Admin |
+| 任务失败提示 | ✅ | TaskDetail 红色提示 |
+| 渲染完成通知 | ⬜ | 待实现 |
+
