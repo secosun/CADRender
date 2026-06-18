@@ -37,11 +37,58 @@ blenderworker → Blender TCP → 导入 OBJ → 材质 → 灯光 → 渲染 �
 
 ## 快速开始
 
-1. **FreeCAD 验证**：`cd blenderworker && bash scripts/validate_freecad_docker.sh`
-2. **blenderserver**：`cd blenderserver && python -m uvicorn main:app --port 8060`
-3. **blenderworker**：`cd blenderworker && python -m src.worker_main`
-4. **freecad-worker**：`cd blenderworker && python -m src.freecad_worker.main`
-5. **renderui**：`cd renderui && npm install && npm run dev`（代理到 `:8060`）
+### 前置条件
+
+- Docker Desktop（启动全部容器服务）
+- Blender 4.x（渲染引擎，安装在宿主机）
+- Python 3.12+（可选，直接运行 blenderserver）
+- Node.js 22+（可选，直接运行 renderui）
+
+### 一键启动（Docker 推荐）
+
+```powershell
+# 1. 启动全部服务（redis + minio + blenderserver + renderui + blenderworker + freecad-worker）
+docker compose -f docker-compose.dev.yml --profile full up -d
+
+# 2. 启动宿主机 Blender TCP 渲染引擎
+$env:BLENDER_ADDON_SRC = "D:\咸阳\框架评审\CADRender\blenderworker\src"
+& "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" -b -P "D:\咸阳\框架评审\CADRender\blenderworker\blender_launcher_env.py"
+
+# 3. 如果需要重启 worker（例如 Blender 重启后）
+docker compose -f docker-compose.dev.yml restart blenderworker
+```
+
+### 分步启动（直接运行）
+
+```bash
+# 1. FreeCAD 验证
+cd blenderworker && bash scripts/validate_freecad_docker.sh
+
+# 2. 启动基础设施（redis + minio）
+docker compose -f docker-compose.dev.yml --profile redis --profile s3 up -d
+
+# 3. blenderserver
+cd blenderserver && python -m uvicorn main:app --port 8060
+
+# 4. blenderworker（需先启动宿主机 Blender TCP，见上方第 2 步）
+cd blenderworker && python -m src.worker_main
+
+# 5. freecad-worker
+cd blenderworker && python -m src.freecad_worker.main
+
+# 6. renderui
+cd renderui && npm install && npm run dev
+```
+
+### 服务端口
+
+| 服务 | 端口 | 地址 |
+|------|------|------|
+| renderui（前端） | 8050 | http://localhost:8050 |
+| blenderserver（API） | 8060 | http://localhost:8060/docs |
+| redis | 6379 | - |
+| minio（S3） | 9000 / 9001 | http://localhost:9001 |
+| Blender TCP（宿主机） | 19876 | 127.0.0.1 |
 
 ## 生产部署
 
