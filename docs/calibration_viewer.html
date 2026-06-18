@@ -7,31 +7,22 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 24px; }
 .container { max-width: 960px; margin: 0 auto; }
-h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+h1 { font-size: 24px; font-weight: 600; }
+.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+.load-bar { display: flex; align-items: center; gap: 8px; }
+.load-bar input { padding: 8px 12px; border: 1px solid #d2d2d7; border-radius: 8px; font-size: 14px; width: 200px; outline: none; }
+.load-bar input:focus { border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.2); }
+.load-bar button { padding: 8px 16px; background: #0071e3; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+.load-bar button:hover { background: #0063cc; }
+.load-bar .file-link { color: #86868b; font-size: 13px; cursor: pointer; text-decoration: underline; }
+.load-bar .file-link:hover { color: #0071e3; }
 .subtitle { color: #86868b; font-size: 14px; margin-bottom: 24px; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 .card-title { font-size: 13px; font-weight: 600; color: #86868b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .stat-label { font-size: 11px; color: #86868b; }
 .stat-value { font-size: 20px; font-weight: 600; margin-top: 2px; }
-.stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.stat-row:last-child { border-bottom: none; }
-.stat-row .label { color: #86868b; }
-.stat-row .value { font-weight: 500; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-.badge-pass { background: #e3f7e8; color: #1a7d36; }
-.badge-fail { background: #fde8e8; color: #c41e1e; }
-.badge-skip { background: #f0f0f0; color: #6b6b6b; }
-#drop-zone { border: 2px dashed #d2d2d7; border-radius: 12px; padding: 48px; text-align: center; cursor: pointer; transition: all 0.2s; margin-bottom: 24px; }
-#drop-zone:hover, #drop-zone.dragover { border-color: #0071e3; background: #f0f7ff; }
-#drop-zone .icon { font-size: 32px; margin-bottom: 8px; color: #86868b; }
-#drop-zone p { color: #86868b; font-size: 14px; }
-#drop-zone .hint { font-size: 12px; color: #aeaeb2; margin-top: 4px; }
-#recent-list { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
-.recent-item { padding: 6px 12px; background: #f0f0f0; border-radius: 6px; font-size: 12px; cursor: pointer; }
-.recent-item:hover { background: #e0e0e0; }
-.image-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.image-grid { display: grid; grid-template-cols: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .image-grid img { width: 100%; border-radius: 8px; border: 1px solid #e8e8ed; }
 .param-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .param-table th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #f0f0f0; color: #86868b; font-weight: 500; }
@@ -39,138 +30,150 @@ h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
 .param-table .delta { color: #86868b; font-size: 11px; }
 .hidden { display: none; }
 .spread { color: #86868b; font-size: 12px; margin-top: 4px; }
+#error-msg { color: #c41e1e; font-size: 13px; margin-top: 8px; }
+#recent-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.recent-item { padding: 4px 10px; background: #f0f0f0; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.recent-item:hover { background: #e0e0e0; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>材质校准结果查看器</h1>
-  <p class="subtitle">拖入 calibration_report.json 查看校准详情</p>
-
-  <div id="drop-zone">
-    <div class="icon">📁</div>
-    <p>拖拽 calibration_report.json 到此处，或点击选择文件</p>
-    <p class="hint">文件位于 calibrate_out/material_&lt;finish_id&gt;/calibration_report.json</p>
-    <input type="file" id="file-input" accept=".json" style="display:none">
-    <div id="recent-list"></div>
+  <div class="header">
+    <h1>材质校准结果查看器</h1>
+    <div class="load-bar">
+      <input id="finish-input" type="text" placeholder="finish 名称 (如 powder_matte)"
+             onkeydown="if(event.key==='Enter')loadFinish()">
+      <button onclick="loadFinish()">查看</button>
+      <span class="file-link" onclick="document.getElementById('file-input').click()">或选择文件</span>
+      <input type="file" id="file-input" accept=".json" style="display:none"
+             onchange="handleFile(this.files[0]);this.value=''">
+    </div>
   </div>
 
+  <div id="recent-list"></div>
+  <div id="error-msg"></div>
+  <p class="subtitle" id="subtitle">输入 finish 名称查看校准结果</p>
+
   <div id="report-content" class="hidden">
-    <!-- Summary -->
     <div class="card">
       <div class="card-title">校准概览</div>
       <div class="grid-4" id="summary-stats"></div>
     </div>
 
-    <!-- Best params -->
     <div class="card">
       <div class="card-title">最佳参数</div>
-      <table class="param-table" id="params-table">
+      <table class="param-table">
         <thead><tr><th>参数</th><th>值</th><th>搜索范围</th></tr></thead>
         <tbody id="params-body"></tbody>
       </table>
       <div class="spread" id="score-spread"></div>
     </div>
 
-    <!-- Images -->
     <div class="card">
       <div class="card-title">渲染对比</div>
-      <div class="image-grid">
+      <div class="image-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div><img id="summary-grid" alt="网格图"><div style="font-size:11px;color:#86868b;margin-top:4px">00_summary_grid.png</div></div>
-        <div id="validation-images"></div>
+        <div id="validation-images"><div style="color:#aeaeb2;font-size:13px;display:flex;align-items:center;justify-content:center;height:100%">未运行迁移验证</div></div>
       </div>
     </div>
 
-    <!-- Confirm stage -->
     <div class="card" id="confirm-card">
       <div class="card-title">确认阶段</div>
       <div id="confirm-content"></div>
     </div>
 
-    <!-- Trial stats -->
     <div class="card">
       <div class="card-title">搜索阶段统计</div>
       <div class="grid-4" id="trial-stats"></div>
-      <div style="margin-top:12px;height:80px;position:relative" id="score-histogram-container">
-        <canvas id="score-histogram" width="800" height="160" style="width:100%;height:80px"></canvas>
-      </div>
+      <div style="margin-top:12px;height:80px"><canvas id="score-histogram" width="800" height="160" style="width:100%;height:80px"></canvas></div>
     </div>
   </div>
 </div>
 
 <script>
-const STORAGE_KEY = 'calibration_recent_paths';
-const MAX_RECENT = 10;
+const STORAGE_KEY = 'calv_recent';
+const SEARCH_PATHS = [
+  name => `calibrate_out/material_${name}/calibration_report.json`,
+  name => `../calibrate_out/material_${name}/calibration_report.json`,
+  name => `../../calibrate_out/material_${name}/calibration_report.json`,
+];
 
-function loadRecent() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch { return []; }
-}
-function saveRecent(paths) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(paths.slice(0, MAX_RECENT)));
-}
-function addRecent(path) {
-  const paths = loadRecent().filter(p => p !== path);
-  paths.unshift(path);
-  saveRecent(paths);
-  renderRecent();
-}
-
+// Load recent list
+let recent = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+function saveRecent() { localStorage.setItem(STORAGE_KEY, JSON.stringify(recent.slice(0, 10))); }
 function renderRecent() {
   const el = document.getElementById('recent-list');
-  const paths = loadRecent();
-  if (!paths.length) { el.innerHTML = ''; return; }
-  el.innerHTML = paths.map(p => `<span class="recent-item" data-path="${p.replace(/"/g, '&quot;')}">${p.split('/').pop()}</span>`).join('');
-  el.querySelectorAll('.recent-item').forEach(el => {
-    el.addEventListener('click', () => loadReportFromPath(el.dataset.path));
-  });
+  if (!recent.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '最近: ' + recent.map(n =>
+    `<span class="recent-item" onclick="document.getElementById('finish-input').value='${n}';loadFinish()">${n}</span>`
+  ).join('');
 }
 
-// Drop zone
-const dz = document.getElementById('drop-zone');
-const fi = document.getElementById('file-input');
-dz.addEventListener('click', () => fi.click());
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-dz.addEventListener('drop', e => {
-  e.preventDefault(); dz.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if (file) { handleFile(file); }
-});
-fi.addEventListener('change', () => {
-  if (fi.files[0]) handleFile(fi.files[0]);
-  fi.value = '';
-});
+async function loadFinish() {
+  const name = document.getElementById('finish-input').value.trim();
+  if (!name) return;
+  document.getElementById('error-msg').textContent = '';
+  document.getElementById('subtitle').textContent = `加载中... (${name})`;
+
+  // Try each search path
+  let data = null;
+  let foundPath = '';
+  for (const makePath of SEARCH_PATHS) {
+    const path = makePath(name);
+    try {
+      const resp = await fetch(path);
+      if (resp.ok) {
+        data = await resp.json();
+        foundPath = path;
+        break;
+      }
+    } catch { /* try next path */ }
+  }
+
+  if (!data) {
+    // Try reading from a served endpoint - maybe the file was saved elsewhere
+    document.getElementById('error-msg').textContent = `未找到 ${name} 的校准报告。确保 calibrate_out/material_${name}/ 存在，或选择文件。`;
+    document.getElementById('subtitle').textContent = '未找到';
+    return;
+  }
+
+  // Add to recent
+  recent = recent.filter(n => n !== name);
+  recent.unshift(name);
+  saveRecent();
+  renderRecent();
+
+  renderReport(data, foundPath);
+}
 
 function handleFile(file) {
+  if (!file) return;
   const reader = new FileReader();
   reader.onload = e => {
     try {
       const report = JSON.parse(e.target.result);
       renderReport(report, file.name);
-      addRecent(file.name);
+      // Guess finish name from filename if possible
+      const m = file.name.match(/material_([^/\\]+)\\/);
+      if (m && m[1]) {
+        document.getElementById('finish-input').value = m[1];
+        recent = recent.filter(n => n !== m[1]);
+        recent.unshift(m[1]);
+        saveRecent(); renderRecent();
+      }
     } catch (err) {
-      alert('JSON 解析失败: ' + err.message);
+      document.getElementById('error-msg').textContent = 'JSON 解析失败: ' + err.message;
     }
   };
   reader.readAsText(file);
 }
 
-async function loadReportFromPath(path) {
-  try {
-    const resp = await fetch(path);
-    const report = await resp.json();
-    renderReport(report, path.split('/').pop());
-  } catch {
-    // If fetch fails, fall back to file input
-    fi.click();
-  }
-}
-
-function renderReport(report, name) {
+function renderReport(report, sourcePath) {
   document.getElementById('report-content').classList.remove('hidden');
 
-  // Summary
   const finish = report.finish_id || '?';
-  document.querySelector('.subtitle').textContent = `${finish} · ${report.calibration_type} · ${report.n_trials_completed || 0} trials · ${report.elapsed_s ? report.elapsed_s.toFixed(1) + 's' : '?'}`;
+  document.getElementById('subtitle').textContent =
+    `${finish} · ${report.n_trials_completed || 0} trials @${report.search_samples || 256}spp confirm@${report.confirm_samples || '-'}spp · ${report.elapsed_s ? report.elapsed_s.toFixed(1) + 's' : ''}`;
 
   document.getElementById('summary-stats').innerHTML = `
     <div><div class="stat-label">Finish</div><div class="stat-value" style="font-size:16px">${finish}</div></div>
@@ -179,7 +182,6 @@ function renderReport(report, name) {
     <div><div class="stat-label">选择来源</div><div class="stat-value" style="font-size:14px">${report.selected_from || 'search'}</div></div>
   `;
 
-  // Best params
   const best = report.best || {};
   const paramSpecs = [
     { key: 'roughness', label: 'Roughness', lo: 0.1, hi: 0.85 },
@@ -193,25 +195,22 @@ function renderReport(report, name) {
     const val = best[s.key];
     if (val === undefined || val === null) return '';
     const pct = ((val - s.lo) / (s.hi - s.lo) * 100).toFixed(0);
-    return `<tr><td>${s.label}</td><td>${typeof val === 'number' ? val.toFixed(4) : val}</td><td class="delta">[${s.lo}, ${s.hi}] &mdash; ${pct}%</td></tr>`;
+    return `<tr><td>${s.label}</td><td>${typeof val === 'number' ? val.toFixed(4) : val}</td><td class="delta">[${s.lo}, ${s.hi}] — ${pct}%</td></tr>`;
   }).filter(Boolean).join('');
 
   const ts = report.trial_stats || {};
   document.getElementById('score-spread').textContent =
     `Score: ${best.score?.toFixed(2) || '?'}  |  trial mean=${ts.mean || '?'} std=${ts.std || '?'} [${ts.min || '?'}, ${ts.max || '?'}]`;
 
-  // Images - try to find summary_grid.png at relative path
-  const basePath = name.replace(/\/[^/]+$/, '').replace(/\\[^\\]+$/, '');
-  const gridPath = (basePath ? basePath + '/' : '') + '00_summary_grid.png';
-  document.getElementById('summary-grid').src = gridPath;
-  document.getElementById('summary-grid').onerror = function() {
-    this.alt = '图片未找到，请将 00_summary_grid.png 与报告文件放在同一目录';
-    this.style.opacity = 0.3;
-  };
+  // Images
+  const baseDir = sourcePath.replace(/\/[^/]+$/, '');
+  const gridSrc = baseDir + '/00_summary_grid.png';
+  const gridImg = document.getElementById('summary-grid');
+  gridImg.src = gridSrc;
+  gridImg.onerror = () => { gridImg.alt = '图片未找到'; gridImg.style.opacity = 0.3; };
 
-  // Validation
-  const valDiv = document.getElementById('validation-images');
   const v = report.validation;
+  const valDiv = document.getElementById('validation-images');
   if (v && v.baseline_path) {
     valDiv.innerHTML = `
       <div><img src="${v.baseline_path}" style="width:100%;border-radius:8px;border:1px solid #e8e8ed"><div style="font-size:11px;color:#86868b;margin-top:4px">基线: CV=${v.baseline_cv?.toFixed(2) || '?'}</div></div>
@@ -221,10 +220,9 @@ function renderReport(report, name) {
     valDiv.innerHTML = '<div style="color:#aeaeb2;font-size:13px;display:flex;align-items:center;justify-content:center;height:100%">未运行迁移验证<br><span style="font-size:11px">使用 --model 运行校准可生成验证结果</span></div>';
   }
 
-  // Confirm stage
   const confirmCard = document.getElementById('confirm-card');
   const cs = report.confirm_stage;
-  if (cs && cs.candidates && cs.candidates.length) {
+  if (cs?.candidates?.length) {
     confirmCard.style.display = '';
     document.getElementById('confirm-content').innerHTML = `
       <div style="font-size:13px;margin-bottom:8px">Top-${cs.top_k} @ ${cs.samples}spp</div>
@@ -240,7 +238,6 @@ function renderReport(report, name) {
     confirmCard.style.display = 'none';
   }
 
-  // Trial stats grid
   document.getElementById('trial-stats').innerHTML = [
     { k: 'n', l: 'Trial 数' }, { k: 'mean', l: '平均分' }, { k: 'std', l: '标准差' }, { k: 'min', l: '最低' },
     { k: 'p25', l: 'P25' }, { k: 'p75', l: 'P75' }, { k: 'max', l: '最高' }, { k: '', l: '' },
@@ -249,10 +246,7 @@ function renderReport(report, name) {
     return `<div><div class="stat-label">${s.l}</div><div class="stat-value" style="font-size:18px">${v !== undefined ? (typeof v === 'number' ? v.toFixed(v < 10 ? 3 : 1) : v) : '—'}</div></div>`;
   }).join('');
 
-  // Histogram of trial scores
-  if (report.trial_scores && report.trial_scores.length) {
-    drawHistogram(report.trial_scores);
-  }
+  if (report.trial_scores?.length) drawHistogram(report.trial_scores);
 }
 
 function drawHistogram(scores) {
@@ -260,36 +254,24 @@ function drawHistogram(scores) {
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-
   const min = Math.min(...scores), max = Math.max(...scores);
-  const bins = 10;
-  const binW = (max - min) / bins || 1;
+  const bins = 10, binW = (max - min) / bins || 1;
   const counts = new Array(bins).fill(0);
-  scores.forEach(s => {
-    const i = Math.min(bins - 1, Math.floor((s - min) / binW));
-    counts[i]++;
-  });
+  scores.forEach(s => counts[Math.min(bins-1, Math.floor((s-min)/binW))]++);
   const maxCount = Math.max(...counts, 1);
-
   const padL = 40, padR = 10, padT = 10, padB = 20;
   const plotW = w - padL - padR, plotH = h - padT - padB;
   const barW = plotW / bins;
-
   counts.forEach((c, i) => {
     const barH = (c / maxCount) * plotH;
-    const x = padL + i * barW;
-    const y = h - padB - barH;
     ctx.fillStyle = '#0071e3';
-    ctx.fillRect(x + 1, y, barW - 2, barH);
+    ctx.fillRect(padL + i * barW + 1, h - padB - barH, barW - 2, barH);
   });
-
   ctx.fillStyle = '#86868b';
   ctx.font = '10px sans-serif';
   ctx.textAlign = 'center';
   for (let i = 0; i <= bins; i += Math.max(1, Math.floor(bins / 4))) {
-    const x = padL + i * barW;
-    const val = (min + i * binW).toFixed(1);
-    ctx.fillText(val, x, h - 4);
+    ctx.fillText((min + i * binW).toFixed(1), padL + i * barW, h - 4);
   }
 }
 
