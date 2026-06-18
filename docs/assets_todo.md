@@ -96,7 +96,7 @@
 | polyhaven_anti_slip_concrete | powder_matte | 灰 | ⚠️ 需完善 |
 
 **映射配置需要注意：**
-- 每个分类的 `studio_lighting_mult`、`framing.margin`、`mesh_processing` 需要按产品形状微调
+- 每个分类的 `framing.margin`、`mesh_processing` 需要按产品形状微调
 - 深色材质用 `dark` lighting_profile，浅色用 `light`
 
 ---
