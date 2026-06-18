@@ -90,11 +90,42 @@ cd renderui && npm install && npm run dev
 | minio（S3） | 9000 / 9001 | http://localhost:9001 |
 | Blender TCP（宿主机） | 19876 | 127.0.0.1 |
 
+## 外观校准（Look-dev）
+
+两步一次性标定，之后无限次生产渲染：
+
+```
+材质校准（每 finish）→ 类目校准（每 category）→ scripts/render.py 出图
+```
+
+| 步骤 | 命令 | 文档 |
+|------|------|------|
+| 材质 | `calibrate.py --mode material` | [material_calibration_guide.md](./docs/material_calibration_guide.md) |
+| 类目 | `calibrate.py --mode category --no-auto-write` | [category_calibration_guide.md](./docs/category_calibration_guide.md) |
+| 人眼复核 | Admin `/admin/calibration`（材质 / 类目 Tab） | 见类目指南 API 节 |
+| 命令速查 | — | [blenderworker/command.txt](./blenderworker/command.txt) |
+
+## 场景引擎
+
+预定义视觉场景，定义在 `blenderworker/src/core/scene_engine.py`：
+
+| 场景 | 风格 | 适用 |
+|------|------|------|
+| `studio_neutral` | 标准影棚 | 通用 |
+| `studio_high_key` | 高调亮白 | 浅色产品 |
+| `studio_dark` | 暗调轮廓光 | 深色/金属 |
+| `studio_soft` | 大面积柔光 | 曲面/反光 |
+| `outdoor_overcast` | 阴天漫射 | 自然光效果 |
+| `outdoor_sunset` | 日落暖光 | 暖色氛围 |
+
+用户在 UI 选择场景，渲染时自动应用。
+
 ## 生产部署
 
 ```bash
-cd blenderserver
-docker compose up -d                                          # 基础服务
-docker compose --profile freecad up -d                        # 含 FreeCAD
-docker compose --profile freecad -f docker-compose.yml up -d  # 完整部署
+# 开发环境
+docker compose -f docker-compose.dev.yml --profile full up -d
+# 宿主机启动 Blender TCP
+$env:BLENDER_ADDON_SRC = "blenderworker/src"
+blender -b -P blenderworker/blender_launcher_env.py
 ```
