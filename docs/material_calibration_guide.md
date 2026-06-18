@@ -12,7 +12,8 @@
 
 ```
 已有 11 种 finish → 直接用，零配置
-新材质 → 创 finishes JSON → 跑校准（建议带 --model 验证）→ 类目校准 → 生产渲染
+新材质 → 创 finishes JSON → 跑校准（建议带 --model 验证）
+       → 类目校准（--no-auto-write + UI 人眼选 Top-K）→ 生产渲染
 ```
 
 已有材质：`powder_matte` / `powder_glossy` / `anodized_black` / `anodized_silver` /
@@ -149,6 +150,7 @@ python scripts/calibrate.py --mode material --finish-id my_new_finish --skip-con
 2. 查看 `calibration_report.json` 的 `trial_stats`（mean/std）评估搜索稳定性
 3. 若带了 `--model`/`--models`，查看 `validation/validation_summary.json` 的 `worst_cv_delta`
 4. 验证 PASS → JSON 已自动更新；FAIL → 调 finish 起点或加 `--reference`，勿用 `--force-write` 除非人工确认
+5. **可选**：Admin `/admin/calibration` → Tab「材质校准」→ 从 trial 图集中另选更优参数写入 finish JSON
 
 ### 人工 spot-check（与自动 gate 并列）
 
@@ -197,13 +199,47 @@ score = 10 × (w₁·σ(lum_std) + w₂·σ(p95) + w₃·σ(grad) + w₄·CIEDE2
 
 ## 第三步：类目校准与生产
 
-材质校准完成后，对该产品类目跑一次类目校准（不改材质）：
+材质校准完成后，对该产品类目跑一次类目校准（不改材质）。
+
+**推荐**：先 `--no-auto-write` 出报告，在 Admin UI 人眼选 Top-K 后再写 preset。
 
 ```powershell
+# 推荐流程：自动搜参 → UI 人眼复核 → 写 preset
+python scripts/calibrate.py --mode category `
+  --model assets/简易款-BodyPad003.obj `
+  --category aluminum_6063 `
+  --cal-quality standard `
+  --no-auto-write
+
+# 或直接自动写入（跳过 UI）
 python scripts/calibrate.py --mode category `
   --model assets/guardrial.obj `
   --category aluminum_6063
 ```
+
+### 类目校准要点
+
+| 项目 | 说明 |
+|------|------|
+| 引擎 | 默认全链路 **Cycles**（Stage 1–3）；`--use-vlm` 可选 Stage 4 |
+| 评分 | CV（Stage 1/2）+ CLIP（Stage 3）；VLM 默认关闭 |
+| 金标 | `--reference` 或类目 `catalog_reference_image` 自动加载 |
+| 验证 | **不做**跨模型迁移；代表 OBJ 与灯光绑定 |
+| gate_profile | 17 类目已配置，CV 阈值自适应 |
+
+### 产出与复核
+
+| 路径 | 用途 |
+|------|------|
+| `calibrate_out/fullshot/category_calibration_report.json` | Top-5 候选 + 合并 params |
+| `calibrate_out/fullshot/calib_s3_*.png` 等 | 候选渲染图 |
+| `product_presets.json` | 自动写入或 UI 选定后写入 |
+
+**Admin UI**：`/admin/calibration` → Tab **「类目校准」** → 对比候选 → 「选为人眼最佳并写入 preset」
+
+**材质 UI**（同页 Tab「材质校准」）：对比 trial 球体 → `select-trial` 写 finish JSON
+
+详细说明见 **`docs/category_calibration_guide.md`**。
 
 然后生产渲染：
 
