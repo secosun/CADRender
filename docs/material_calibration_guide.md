@@ -265,8 +265,79 @@ python scripts/render.py --model assets/guardrial.obj --category aluminum_6063
 | 材质 | roughness | metallic | specular | coat_weight |
 |------|-----------|----------|----------|-------------|
 | 哑光黑喷粉 | ~0.50 | 0.0 | ~0.3 | ~0.20 |
-| 拉丝铝 | ~0.35 | 1.0 | ~0.5 | ~0.05 |
+| 拉丝铝（Voronoi） | ~0.32 | 1.0 | ~0.39 | 0.0 |
 | 阳极氧化黑 | ~0.30 | 1.0 | ~0.5 | ~0.15 |
+
+> **拉丝铝** 生产默认已切换为 **Voronoi 程序化**（`brush_mode: voronoi`）。Wave 备用：`brushed_aluminum_wave`。
+
+---
+
+## 拉丝铝专项（Voronoi 高光切割器）
+
+### 设计原则
+
+拉丝铝的本质是 **微表面各向异性**，不是表面沟槽纹理。
+
+| 判断标准 | 说明 |
+|---------|------|
+| ✅ 正确 | 关掉主光、仅环境光时 **看不到条纹**；条纹只在 **高光带** 里呈细丝 |
+| ❌ 错误（砂纸感） | 亮到暗全表面有竖纹 → Voronoi 在驱动 Bump/Base Color |
+
+### 节点拓扑（`M_VoronoiBrush`）
+
+```
+Voronoi (F1, Distance to Edge, randomness≈0.1)
+    │
+    ├─ MapRange 反转（边缘距离小 → 高 fac）
+    ├─ ColorRamp [0.0=black, 0.02=white]  CONSTANT，极窄边界
+    │       └─→ Anisotropic += strength×0.15（仅切割高光）
+    │
+    └─ connect_bump=false（默认不连 Normal；可选极弱 0.03）
+```
+
+关键 preset 字段：
+
+| 参数 | 生产默认 | 说明 |
+|------|---------|------|
+| `mapping.scale` | `[1600, 1, 0]` | X 拉伸细纹；Z=0 减轻球体极点压缩 |
+| `ramp_white_pos` | `0.02` | 只保留发丝级边界 |
+| `voronoi_randomness` | `0.1` | 避免豹纹细胞 |
+| `anisotropic_voronoi_strength` | `0.15` | 只调制各向异性 |
+| `connect_bump` | `false` | 不铺全表面凹凸 |
+| `bump_noise_strength` | `0` | 去掉边缘颗粒 |
+
+高光切割器修正后需配合 **scorer v3**（中调 |Gx| 微沟槽 + 镜面惩罚）重跑校准；旧版会把镜面球打到 ~8.2。
+
+### 校准命令
+
+```powershell
+cd blenderworker
+$env:PYTHONPATH = "src"
+
+python scripts/calibrate.py --mode material `
+  --finish-id brushed_aluminum `
+  --search-samples 512 --confirm-samples 1024 --no-auto-write
+
+python scripts/test/brushed_aluminum_ab_review.py
+```
+
+同步节点组到 Blender 后需 **禁用再启用 MCP 插件** 或重启 Blender。
+
+### A/B 与 Admin
+
+| 标签 | 方案 | Admin |
+|------|------|-------|
+| A | Wave 校准 | — |
+| **B** | **Voronoi 校准** | **✅ 最佳（方向对，待高光切割器修正）** |
+| C | Voronoi+Wave | — |
+
+### 相关 finish
+
+| ID | 用途 |
+|----|------|
+| `brushed_aluminum` | 生产默认（Voronoi 高光切割器） |
+| `brushed_aluminum_wave` | Wave 拉光备用 |
+| `brushed_aluminum_voronoi` | 同参别名 |
 
 ---
 
