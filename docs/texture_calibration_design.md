@@ -162,26 +162,47 @@ texture_engine（平板 + 参考图）
 
 ## CLI
 
+统一入口与 scope 说明见 [calibration_pipeline_design.md](./calibration_pipeline_design.md)。
+
 ```powershell
 cd blenderworker
 $env:PYTHONPATH = "src"
 
-# 仅纹理
+# ── 仅纹理（PBR 已在材质球阶段或人工锁定）──
 python scripts/calibrate.py `
   --scope texture `
   --finish-id outdoor_sand `
-  --reference outputs/yili_crops/outdoor_sand_crop.png `
-  --texture-trials 50 `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --texture-trials 10 `
   --use-vlm `
   --no-auto-write
 
-# 推荐：材质 + 纹理
+# ── 推荐：材质球 + 纹理平板 一次性 ──
 python scripts/calibrate.py `
   --scope finish `
   --finish-id outdoor_sand `
-  --reference outputs/yili_crops/outdoor_sand_crop.png `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
   --no-auto-write
+
+# ── 全流程：材质 + 纹理 + 类目 ──
+python scripts/calibrate.py `
+  --scope full `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --model assets/guardrial.obj `
+  --category aluminum_6063 `
+  --no-auto-write
+
+# 仅重导审查三栏图（不重新 Optuna）
+python scripts/render_texture_review.py --finish-id outdoor_sand
 ```
+
+| `--scope` | 本模块 | 说明 |
+|-----------|--------|------|
+| `texture` | ✅ 仅 TextureModule | 需 `--reference`（蚁力 crop） |
+| `finish` | ✅ 第二步（接 Material） | 推荐 look-dev 主路径 |
+| `full` | ✅ 第二步（接 Material，再接 Category） | 需 `--model` 才跑类目 |
+| `material` | ❌ 不运行 | 球体不做 reference 纹理 |
 
 兼容：`--mode texture` 等价于 `--scope texture`。
 

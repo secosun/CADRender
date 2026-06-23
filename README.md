@@ -55,24 +55,27 @@ Finish 配置：`blenderworker/blender_mcp_presets/finishes/*.json`
 
 场景定义：`blenderworker/src/core/scene_engine.py`
 
-## 纹理校准管线
+## 外观校准（Look-dev）
 
-两阶段校准：
+统一入口 `scripts/calibrate.py --scope`，子模块：材质球 PBR → 参考图纹理 → 产品类目。
 
 ```
-Phase 1: 特征探索（快速，纯本地）
-  - LBP/GLCM/FFT/Sobel 纹理特征提取
-  - Optuna TPE 优化 bakecoat 参数
-  - 平板场景 + 掠射灯光
-
-Phase 2: VLM 精调（可选，需 API Key）
-  - Phase 1 top-3 → VLM 视觉相似度评分
-  - 人眼标准判断纹理匹配度
+材质校准（球体）→ 纹理校准（蚁力参考图）→ 类目校准（产品模型）→ render.py 出图
 ```
 
-详见：`docs/texture_calibration_design.md`
+| 步骤 | 命令 | 文档 |
+|------|------|------|
+| 统一管线 | `calibrate.py --scope finish` | [calibration_pipeline_design.md](./docs/calibration_pipeline_design.md) |
+| 材质校准 | `calibrate.py --scope material` | [material_calibration_guide.md](./docs/material_calibration_guide.md) |
+| 纹理校准 | `calibrate.py --scope texture` | [texture_calibration_design.md](./docs/texture_calibration_design.md) |
+| 类目校准 | `calibrate.py --scope category` | [category_calibration_guide.md](./docs/category_calibration_guide.md) |
 
-## 快速开始
+## 设计文档
+
+- [统一校准管线](./docs/calibration_pipeline_design.md) — 单入口、三子模块、scope 与场景分工
+- [纹理校准设计思想](./docs/texture_calibration_design.md) — 参考图驱动、生产 bakecoat、对称评分
+- [材质校准指南](./docs/material_calibration_guide.md) — PBR 参数校准流程
+- [类目校准指南](./docs/category_calibration_guide.md) — 曝光/灯光/合成/VLM 校准
 
 ### 前置条件
 
@@ -145,8 +148,20 @@ blenderworker → Blender TCP → 导入 OBJ → 材质 → 灯光 → 渲染 �
 | 纹理校准 | `calibrate.py --mode texture` | [texture_calibration_design.md](./docs/texture_calibration_design.md) |
 | 类目校准 | `calibrate.py --mode category` | [category_calibration_guide.md](./docs/category_calibration_guide.md) |
 
+## 环境配置
+
+新环境先读 [environment_config.md](./docs/environment_config.md)，其中 `cadrender-env` 块可被脚本自动解析：
+
+```powershell
+.\scripts\load_calibration_env.ps1          # 加载到当前 PowerShell 会话
+python scripts\load_calibration_env.py --write .env   # 生成 .env 模板
+```
+
+`blenderworker/scripts/calibrate.py` 启动时会自动加载同一配置（文档块 + `.env`，不覆盖已 export 的变量）。
+
 ## 设计文档
 
+- [环境配置](./docs/environment_config.md) — VLM、Blender TCP、校准相关环境变量
 - [纹理校准设计思想](./docs/texture_calibration_design.md) — 纹理/颜色解耦、两阶段校准、配置分层
 - [材质校准指南](./docs/material_calibration_guide.md) — PBR 参数校准流程
 - [类目校准指南](./docs/category_calibration_guide.md) — 曝光/灯光/合成/VLM 校准

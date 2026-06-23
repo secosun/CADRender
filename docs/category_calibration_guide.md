@@ -4,6 +4,8 @@
 > 默认全链路 **Cycles + CV/CLIP**，VLM 可选；**不改** roughness/metallic 等材质旋钮。
 >
 > 代表模型与灯光几何 **绑定**——不做跨模型迁移验证；每类目需自己的代表 OBJ。
+>
+> CLI：`--scope category` 仅跑本模块；或 `--scope full` 在 finish 校准之后自动衔接（需 `--model`）。详见 [calibration_pipeline_design.md](./calibration_pipeline_design.md)。
 
 ---
 

@@ -4,8 +4,8 @@ Usage:
     python scripts/crop_yili_references.py
 
 Output:
-    outputs/yili_crops/<finish_id>_<n>.png — individual swatch crops
-    outputs/yili_crops/<finish_id>_crop.png — best representative crop
+    outputs/yili_crops/<finish_id>/<finish_id>_<n>.png — individual swatch crops
+    outputs/yili_crops/<finish_id>/<finish_id>_crop.png — best representative crop
 """
 
 from __future__ import annotations
@@ -31,6 +31,10 @@ SERIES_MAP = {
 
 YILI_DIR = Path(__file__).resolve().parents[1] / "outputs" / "蚁力色卡"
 OUT_DIR = Path(__file__).resolve().parents[1] / "outputs" / "yili_crops"
+
+
+def finish_out_dir(base: Path, finish_id: str) -> Path:
+    return base / finish_id
 
 
 def crop_swatches(image: np.ndarray, n_cols: int = 4, n_rows: int = 4) -> list[tuple[np.ndarray, int, int]]:
@@ -115,25 +119,28 @@ def main():
         img = np.array(Image.open(ref_img_path).convert("RGB"))
         crops = crop_swatches(img)
 
+        finish_dir = finish_out_dir(OUT_DIR, finish_id)
+        finish_dir.mkdir(parents=True, exist_ok=True)
+
         if not crops:
             print(f"  WARNING: No swatches detected, saving full center crop")
             h, w = img.shape[:2]
             y0, y1 = h // 4, 3 * h // 4
             x0, x1 = w // 4, 3 * w // 4
             center = img[y0:y1, x0:x1]
-            out_path = OUT_DIR / f"{finish_id}_crop.png"
+            out_path = finish_dir / f"{finish_id}_crop.png"
             Image.fromarray(center).save(out_path)
             print(f"  -> {out_path.name}")
             continue
 
         # Save individual swatches
         for i, (crop, cx, cy) in enumerate(crops[:8]):  # Max 8 per image
-            out_path = OUT_DIR / f"{finish_id}_{i:02d}.png"
+            out_path = finish_dir / f"{finish_id}_{i:02d}.png"
             Image.fromarray(crop).save(out_path)
 
         # Save the most representative crop (largest non-background area)
         best = max(crops, key=lambda x: x[0].shape[0] * x[0].shape[1])
-        out_path = OUT_DIR / f"{finish_id}_crop.png"
+        out_path = finish_dir / f"{finish_id}_crop.png"
         Image.fromarray(best[0]).save(out_path)
         print(f"  -> {len(crops)} swatches, best crops saved")
 

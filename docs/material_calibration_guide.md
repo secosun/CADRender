@@ -3,8 +3,10 @@
 > **定位**：本系统校准的是 **渲染外观 preset**（look-dev），使 catalog 出图风格稳定一致；
 > 输出的 `roughness` 等数值是 **Blender Principled 旋钮**，不是实验室测得的 BRDF 参数。
 >
-> `calibrate.py --mode material`：生产对齐球体 + 两阶段采样（256→1024spp）+
-> Optuna 搜索 + trial 不确定性报告 + 可选多模型迁移验证 + 条件写入 finish JSON。
+> `calibrate.py --scope material` / MaterialModule：**仅材质球 PBR**（roughness / metallic / specular / coat / 基材各向异性）。
+> **纹理不由球体校准**——有 `texture_profile` 的 finish 由 **TextureModule**（平板 + 蚁力参考图）独立负责；推荐 `--scope finish` 一次跑完两阶段。
+>
+> 生产对齐球体 + 256→1024spp 确认 + Optuna + 可选多模型验证 + 条件写入 finish JSON。
 
 ---
 
@@ -18,11 +20,34 @@
 
 已有材质：`powder_matte` / `powder_glossy` / `anodized_black` / `anodized_silver` /
 `brushed_aluminum` / `stainless_brushed` / `champagne_gold` / `electrophoretic` /
-`fluorocarbon` / `gray_silver_metallic` / `wood_transfer`
+`fluorocarbon` / `gray_silver_metallic` / `wood_transfer` / **`outdoor_sand`（铝基材+砂纹漆）**
 
 ---
 
 ## 架构概览
+
+**铝型材 + 喷涂漆面**（`substrate_finish_id`）：
+
+```
+finishes/outdoor_sand.json
+  substrate_finish_id → brushed_aluminum_voronoi（拉丝铝 · 球体定 PBR）
+  texture_profile     → outdoor_sand（砂纹漆 · 平板+参考图定纹理）
+       │
+       ▼
+finish_resolve.py（merge_substrate_finish）
+  principled: metallic/anisotropic ← 基材；base_color/coat_* ← 漆面
+  bakecoat: substrate_brush（Voronoi）+ M_Bakecoat 砂纹
+       │
+       ▼
+calibrate.py --scope finish
+  MaterialModule（球）→ 漆层 PBR + 基材各向异性
+  TextureModule（板）→ bakecoat 砂纹 vs 蚁力参考
+       │
+       ▼
+build_bakecoat_principled（生产：Voronoi 拉丝 + M_Bakecoat 同栈）
+```
+
+无 `substrate_finish_id` 的 finish 仍走原单材质球路径（plain Principled + 可选 bakecoat）。
 
 ```
 finishes/<id>.json
@@ -62,21 +87,24 @@ top-3 复验 @ 1024spp（降低噪声最优）
   "view_exposure": -0.4,
   "hdri_strength": 0.4,
   "world_strength": 0.2,
+  "calibration": {
+    "lock_metallic": true,
+    "substrate_finish_id": "brushed_aluminum_voronoi"
+  },
   "principled": {
-    "base_color": [0.5, 0.5, 0.5, 1.0],
-    "roughness": 0.3,
-    "metallic": 0.0,
-    "specular_ior_level": 0.5,
-    "coat_weight": 0.2,
-    "coat_roughness": 0.3,
-    "coat_ior": 1.5
+    "base_color": [0.52, 0.55, 0.60, 1.0],
+    "coat_weight": 0.55,
+    "coat_roughness": 0.28
   },
   "bakecoat_procedural": {
     "bump": { "strength": 0.02, "distance": 1.0 },
-    "micro": { "scale": 720, "detail": 11, "roughness": 0.48 }
+    "micro": { "scale": 720, "detail": 11, "roughness": 0.48 },
+    "rough_mix_factor": 0.7
   }
 }
 ```
+
+带 `substrate_finish_id` 的 finish（如 `outdoor_sand`）在加载时自动合并拉丝铝基材；材质球阶段搜漆层 PBR，平板阶段搜砂纹纹理。
 
 **`base_color` 是唯一必须人工精确定义的参数**；`lighting_profile` 决定球体与生产使用同一套灯光。
 
@@ -91,30 +119,90 @@ top-3 复验 @ 1024spp（降低噪声最优）
 
 ## 第二步：运行校准
 
-确保 **Blender TCP 已启动**：
+确保 **Blender TCP 已启动**（`:19876`）。
 
 ```powershell
 cd blenderworker
 $env:PYTHONPATH = "src"
+```
 
-# 推荐：完整闭环 + 多几何验证
-python scripts/calibrate.py --mode material `
+### 统一入口：`--scope` 选环节
+
+与 [calibration_pipeline_design.md](./calibration_pipeline_design.md) 一致——可 **一次性串联**，也可 **单独跑某一环**：
+
+| 目标 | 命令 |
+|------|------|
+| 材质 + 纹理（推荐） | `--scope finish --finish-id <id> --reference <蚁力crop>` |
+| 材质 + 纹理 + 类目 | `--scope full` + 上列 + `--model <obj>` |
+| 仅材质球 PBR | `--scope material --finish-id <id>` |
+| 仅纹理平板 | `--scope texture --finish-id <id> --reference <蚁力crop>` |
+| 仅类目 | `--scope category --model <obj> --category <key>` |
+
+旧写法 `--mode material|texture|category` 仍可用，分别对应上表三个单环节；**不含** `finish` / `full`。
+
+### 仅材质球（`--scope material`）
+
+```powershell
+# 推荐：球体 Optuna + 多模型 worst-case 验证
+python scripts/calibrate.py --scope material `
   --finish-id my_new_finish `
   --models assets/guardrial.obj,assets/简易款-BodyPad003.obj `
   --category aluminum_6063
 
 # 单模型验证
-python scripts/calibrate.py --mode material `
+python scripts/calibrate.py --scope material `
   --finish-id my_new_finish `
   --model assets/guardrial.obj `
   --category aluminum_6063
 
 # 仅球体（更快，无迁移验证）
-python scripts/calibrate.py --mode material --finish-id my_new_finish
+python scripts/calibrate.py --scope material --finish-id my_new_finish
 
 # 快速迭代（跳过 1024spp 确认）
-python scripts/calibrate.py --mode material --finish-id my_new_finish --skip-confirm
+python scripts/calibrate.py --scope material --finish-id my_new_finish --skip-confirm
+
+# 金标球图（SSIM+直方图，覆盖 heuristic 评分）
+python scripts/calibrate.py --scope material --finish-id my_new_finish `
+  --reference docs/assets/golden/sphere_powder_matte.png
 ```
+
+> **注意**：有 `texture_profile` 的 finish（如 `outdoor_sand`）**不要在球体阶段期望纹理收敛**；纹理由 TextureModule 负责，请用 `--scope finish` 或 `--scope texture`。
+
+### 材质 + 纹理（`--scope finish`，如 outdoor_sand）
+
+```powershell
+# 审查模式：不写 preset
+python scripts/calibrate.py `
+  --scope finish `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --no-auto-write
+
+# 确认后落盘
+python scripts/calibrate.py `
+  --scope finish `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png
+
+# 仅重导纹理审查图（已有 best_params）
+python scripts/render_texture_review.py --finish-id outdoor_sand
+```
+
+Ball：铝基材 + 漆层 PBR；Plane：对照蚁力参考搜砂纹。详见 [texture_calibration_design.md](./texture_calibration_design.md)。
+
+### 全流程（`--scope full`）
+
+```powershell
+python scripts/calibrate.py `
+  --scope full `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --model assets/guardrial.obj `
+  --category aluminum_6063 `
+  --no-auto-write
+```
+
+材质/纹理 PASS 后进入 CategoryModule；类目细节见 [category_calibration_guide.md](./category_calibration_guide.md)。
 
 ### 校准过程（约 10–25 分钟，视 trial 数、确认阶段与验证模型数）
 
@@ -132,6 +220,8 @@ python scripts/calibrate.py --mode material --finish-id my_new_finish --skip-con
 
 | 参数 | 说明 |
 |------|------|
+| `--scope finish\|full\|material\|texture\|category` | 选择校准环节（见上表） |
+| `--no-auto-write` | 只出审查产物，不写 preset |
 | `--material-trials N` | Optuna 轮数（默认 32） |
 | `--search-samples N` | 搜索阶段 Cycles spp（默认 256） |
 | `--confirm-samples N` | 确认阶段 spp（默认 1024） |
