@@ -52,6 +52,7 @@ def main() -> int:
 
     print(f"Input: {len(items)}  selected: {len(result.selected)}")
     print(f"  rejected brightness: {[it.index for it in result.rejected_brightness]}")
+    print(f"  rejected glare: {[it.index for it in result.rejected_glare]}")
     print(f"  rejected quality (30%): {[it.index for it in result.rejected_quality]}")
     print(f"  rejected outlier: {[it.index for it in result.rejected_outlier]}")
     print(f"  medoid index: {result.medoid_index}")

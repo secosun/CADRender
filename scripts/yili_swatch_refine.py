@@ -45,11 +45,13 @@ class RefineResult:
     rejected_quality: list[SwatchItem]
     rejected_outlier: list[SwatchItem]
     rejected_brightness: list[SwatchItem] = field(default_factory=list)
+    rejected_glare: list[SwatchItem] = field(default_factory=list)
     mean_feature: np.ndarray | None = None
     medoid_index: int = -1
     quality_scores: dict[int, float] = field(default_factory=dict)
     outlier_distances: dict[int, float] = field(default_factory=dict)
     brightness_stats: dict[int, dict[str, float]] = field(default_factory=dict)
+    glare_stats: dict[int, dict[str, float]] = field(default_factory=dict)
 
 
 def _is_white(rgb: np.ndarray, threshold: float = 232.0) -> np.ndarray:
@@ -117,13 +119,106 @@ def swatch_passes_brightness_gate(
     )
 
 
+def swatch_glare_stats(
+    rgb: np.ndarray,
+    *,
+    white_thresh: float = 232.0,
+    specular_thresh: float = 243.0,
+    clip_thresh: float = 251.0,
+) -> dict[str, float]:
+    """Detect specular glare / highlight blowout on center swatch (classical CV, no AI)."""
+    h, w = rgb.shape[:2]
+    cy0, cy1 = h // 4, (3 * h) // 4
+    cx0, cx1 = w // 4, (3 * w) // 4
+    patch = rgb[cy0:cy1, cx0:cx1]
+
+    if rgb.ndim == 3:
+        gray = patch.astype(np.float32).mean(axis=-1)
+        max_ch = patch.astype(np.float32).max(axis=-1)
+        min_ch = patch.astype(np.float32).min(axis=-1)
+        card_white = min_ch > 249.0
+    else:
+        gray = patch.astype(np.float32)
+        max_ch = gray
+        card_white = gray > 249.0
+
+    paint_mask = ~card_white
+    if int(paint_mask.sum()) < 30:
+        paint_mask = np.ones(max_ch.shape, dtype=bool)
+
+    mat_gray = gray[paint_mask]
+    mat_max = max_ch[paint_mask]
+    specular_frac = float((mat_max >= specular_thresh).mean())
+    clip_frac = float((max_ch >= clip_thresh).mean())
+    material_std = float(mat_gray.std())
+    center_mean = float(mat_gray.mean())
+    center_specular_frac = specular_frac
+
+    blowout_score = 0.0
+    if center_mean > 200.0 and material_std < 18.0:
+        blowout_score = float(min(1.0, max(0.0, (center_mean - 200.0) / 55.0)))
+
+    bright = (max_ch >= specular_thresh) & paint_mask
+    glare_ring_ratio = 0.0
+    if bright.any():
+        ring = np.zeros_like(bright, dtype=bool)
+        ring[1:, :] |= bright[:-1, :]
+        ring[:-1, :] |= bright[1:, :]
+        ring[:, 1:] |= bright[:, :-1]
+        ring[:, :-1] |= bright[:, 1:]
+        ring &= paint_mask & ~bright
+        ring_gray = gray[ring]
+        if ring_gray.size > 20:
+            glare_ring_ratio = float((ring_gray < mat_gray.mean() * 0.72).mean())
+
+    return {
+        "specular_frac": specular_frac,
+        "clip_frac": clip_frac,
+        "center_specular_frac": center_specular_frac,
+        "center_mean": center_mean,
+        "material_std": material_std,
+        "blowout_score": blowout_score,
+        "glare_ring_ratio": glare_ring_ratio,
+    }
+
+
+def swatch_passes_glare_gate(
+    stats: dict[str, float],
+    *,
+    max_specular_frac: float = 0.10,
+    max_clip_frac: float = 0.025,
+    max_center_specular_frac: float = 0.18,
+    max_blowout_score: float = 0.55,
+    max_glare_ring_ratio: float = 0.42,
+    max_center_mean_blowout: float = 235.0,
+    min_std_when_bright: float = 15.0,
+) -> bool:
+    if stats["clip_frac"] > max_clip_frac:
+        return False
+    if stats["specular_frac"] > max_specular_frac:
+        return False
+    if stats["center_specular_frac"] > max_center_specular_frac:
+        return False
+    if stats["blowout_score"] > max_blowout_score:
+        return False
+    if stats["glare_ring_ratio"] > max_glare_ring_ratio:
+        return False
+    if (
+        stats["center_mean"] > max_center_mean_blowout
+        and stats["material_std"] < min_std_when_bright
+    ):
+        return False
+    return True
+
+
 def swatch_quality_score(rgb: np.ndarray, white_thresh: float = 232.0) -> dict[str, float]:
     """Heuristic quality for phase-1 rejection (higher score = better)."""
     bright = swatch_brightness_stats(rgb, white_thresh)
+    glare = swatch_glare_stats(rgb, white_thresh=white_thresh)
     white_ratio = bright["white_ratio"]
     mat = rgb[~_is_white(rgb, white_thresh)]
     if mat.size < 30:
-        return {**bright, "std": 0.0, "edge": 0.0, "score": -1.0}
+        return {**bright, **glare, "std": 0.0, "edge": 0.0, "score": -1.0}
 
     if mat.ndim == 3:
         gray = mat.astype(np.float32).mean(axis=-1)
@@ -143,9 +238,13 @@ def swatch_quality_score(rgb: np.ndarray, white_thresh: float = 232.0) -> dict[s
         - white_ratio * 50.0
         + bright["material_mean"] * 0.12
         - bright["dark_frac"] * 45.0
+        - glare["specular_frac"] * 120.0
+        - glare["clip_frac"] * 200.0
+        - glare["blowout_score"] * 35.0
     )
     return {
         **bright,
+        **glare,
         "std": std,
         "edge": edge,
         "score": score,
@@ -179,20 +278,28 @@ def refine_swatches(
     min_keep: int = 2,
     mean_thumb_size: int = 128,
     brightness_gate: bool = True,
+    glare_gate: bool = True,
 ) -> RefineResult:
-    """Drop shadow-heavy swatches, then worst ``reject_fraction``, then texture outliers."""
+    """Drop shadow/glare swatches, then worst ``reject_fraction``, then texture outliers."""
     if not items:
         return RefineResult(selected=[], rejected_quality=[], rejected_outlier=[])
 
     brightness_stats: dict[int, dict[str, float]] = {}
+    glare_stats: dict[int, dict[str, float]] = {}
     rejected_brightness: list[SwatchItem] = []
+    rejected_glare: list[SwatchItem] = []
     candidates: list[SwatchItem] = []
     for item in items:
         stats = swatch_brightness_stats(item.rgb)
+        gstats = swatch_glare_stats(item.rgb)
         brightness_stats[item.index] = stats
+        glare_stats[item.index] = gstats
         item.meta.update(stats)
+        item.meta.update(gstats)
         if brightness_gate and not swatch_passes_brightness_gate(stats):
             rejected_brightness.append(item)
+        elif glare_gate and not swatch_passes_glare_gate(gstats):
+            rejected_glare.append(item)
         else:
             candidates.append(item)
 
@@ -221,9 +328,11 @@ def refine_swatches(
             rejected_quality=rejected_q,
             rejected_outlier=[],
             rejected_brightness=rejected_brightness,
+            rejected_glare=rejected_glare,
             medoid_index=medoid.index,
             quality_scores=quality_scores,
             brightness_stats=brightness_stats,
+            glare_stats=glare_stats,
         )
 
     feat_vecs = [_feature_vector(it.rgb) for it in kept]
@@ -268,11 +377,13 @@ def refine_swatches(
         rejected_quality=rejected_q,
         rejected_outlier=rejected_o,
         rejected_brightness=rejected_brightness,
+        rejected_glare=rejected_glare,
         mean_feature=mean_vec,
         medoid_index=medoid_idx,
         quality_scores=quality_scores,
         outlier_distances=outlier_dist,
         brightness_stats=brightness_stats,
+        glare_stats=glare_stats,
     )
 
 
@@ -317,14 +428,17 @@ def save_refine_outputs(
         "n_rejected_quality": len(result.rejected_quality),
         "n_rejected_outlier": len(result.rejected_outlier),
         "n_rejected_brightness": len(result.rejected_brightness),
+        "n_rejected_glare": len(result.rejected_glare),
         "selected_indices": [it.index for it in result.selected],
         "rejected_quality_indices": [it.index for it in result.rejected_quality],
         "rejected_outlier_indices": [it.index for it in result.rejected_outlier],
         "rejected_brightness_indices": [it.index for it in result.rejected_brightness],
+        "rejected_glare_indices": [it.index for it in result.rejected_glare],
         "medoid_index": result.medoid_index,
         "quality_scores": result.quality_scores,
         "outlier_distances": result.outlier_distances,
         "brightness_stats": {str(k): v for k, v in result.brightness_stats.items()},
+        "glare_stats": {str(k): v for k, v in result.glare_stats.items()},
         "crop_path": str(medoid_path),
         "crop_mean_path": str(mean_path),
     }
@@ -365,6 +479,7 @@ def _save_refine_debug(
     rej_q = {it.index for it in result.rejected_quality}
     rej_o = {it.index for it in result.rejected_outlier}
     rej_b = {it.index for it in result.rejected_brightness}
+    rej_g = {it.index for it in result.rejected_glare}
 
     for item in all_items:
         ch, cw = item.rgb.shape[:2]
@@ -372,6 +487,9 @@ def _save_refine_debug(
         if item.index in sel:
             color = (0, 255, 0)
             width = 3 if item.index == result.medoid_index else 2
+        elif item.index in rej_g:
+            color = (255, 128, 0)
+            width = 2
         elif item.index in rej_b:
             color = (255, 0, 255)
             width = 2

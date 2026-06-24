@@ -50,6 +50,8 @@ MaterialModule（球体 · 铝基材+漆层 PBR）→ TextureModule（平板 · 
 |----|------|
 | 子模块 | `orchestration/calibration/texture_module.py` |
 | 引擎 | `orchestration/calibration/texture_engine.py` |
+| VLM 闭环 | `orchestration/calibration/shared/texture_vlm_loop.py` |
+| Live Review | `orchestration/calibration/shared/live_review.py` |
 | 场景常量 | `orchestration/calibration/shared/scene_texture_panel.py` |
 | 对称评分 | `orchestration/calibration/shared/scoring_reference.py` |
 
@@ -101,7 +103,8 @@ build_bakecoat_principled() → M_Bakecoat（micro / fine / hyperfine bump 叠�
 1. 参考图与 trial 图 **同一套** `preprocess_reference` 后再提取特征。
 2. **Optuna 主评分使用 roughness 代理 pass**（micro/fine Noise + `rough_mix` + `rough_ramp` → Emission），与 `M_Bakecoat` 参数对齐、与光照解耦；trial 图应可见颗粒结构。
 3. 写入生产仍走完整 `build_bakecoat_principled` + `M_Bakecoat`。
-4. 可选 `--use-vlm` 在 top-3 上精调。
+4. **Beauty 与 Proxy 分离**：Optuna 分数只来自 proxy pass；beauty pass 用于 Live Review / VLM / `beauty_best.png`，可施加审查专用 finish（暗场、bump×6、coat 法线加强等），**不得**反向污染 proxy 评分。
+5. 可选 `--use-vlm` 在 top-3 上精调；`--texture-vlm-loop` 启用多轮闭环（见下节）。
 
 ```
 score = 0.85 × cosine_similarity(features_render, features_ref)
@@ -159,6 +162,39 @@ texture_engine（平板 + 参考图）
 ```
 
 **不要**在 `--scope material` 默认路径上期望纹理收敛；砂纹/户外漆用 `--scope finish` 或 `--scope texture`。
+
+## VLM 自主闭环（`--texture-vlm-loop`）
+
+当 GLCM/诚实评分长期不达标时，可启用多轮闭环：
+
+```
+Round N: Optuna (--texture-trials) → 选 best proxy trial
+       → VLM 对比 proxy vs 参考（overall_score + 文字反馈）
+       → 根据反馈收紧/放宽 bounds（micro_scale、bump、rough_mix 等）
+       → Round N+1 ...
+```
+
+| 产物 | 说明 |
+|------|------|
+| `texture_vlm_loop.json` | 各轮 Optuna 摘要、feature 分、VLM 分、bounds 变更 |
+| `texture_vlm_loop.jsonl` | 逐 trial 日志 |
+
+**注意**：pipeline 最终写入 preset 的 trial 由 VLM/Optuna 综合选出；若需按 **feature 最高轮** 写 preset，用 `scripts/write_feature_best_round.py <finish_id>`（读取 `texture_vlm_loop.json` 中各轮 `best_feature_score`）。
+
+## 定稿验收
+
+preset 写入后：
+
+```powershell
+python scripts/acceptance_finish.py --finish-id outdoor_sand
+python scripts/write_feature_best_round.py outdoor_sand   # 可选：feature-best 轮覆盖 preset
+python scripts/preview.py --finish outdoor_sand --texture outdoor_sand   # 生产模式，非 --calibration
+```
+
+| 产物 | 路径 |
+|------|------|
+| 金属球 | `calibrate_out/acceptance_<id>/shader_ball.png` |
+| 平板三栏 | `calibrate_out/texture_<id>/compare_triple.png` |
 
 ## CLI
 
@@ -231,3 +267,7 @@ python scripts/render_texture_review.py --finish-id outdoor_sand
 
 - 宿主机 Blender TCP `:19876`
 - 参考图先跑 `python scripts/crop_yili_references.py`（需 `outputs/蚁力色卡/` 原图）
+
+## 进行中的待办
+
+outdoor_sand 纹理校准执行清单与验收标准见 **[outdoor_sand_calibration_backlog.md](./outdoor_sand_calibration_backlog.md)**。

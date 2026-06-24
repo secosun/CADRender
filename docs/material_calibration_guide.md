@@ -190,6 +190,74 @@ python scripts/render_texture_review.py --finish-id outdoor_sand
 
 Ball：铝基材 + 漆层 PBR；Plane：对照蚁力参考搜砂纹。详见 [texture_calibration_design.md](./texture_calibration_design.md)。
 
+### Live Review（校准中实时看图）
+
+校准跑 Optuna 时，加 `--live-review` 会从控制台进程**直接弹出桌面窗口**，布局为 **2×2 双栏对比**：
+
+| | 左栏 | 右栏 |
+|---|------|------|
+| **上行** | 上一张 trial | 当前 trial |
+| **列内** | Beauty PBR \| Proxy 伪彩 | Beauty PBR \| Proxy 伪彩 |
+
+底部显示当前轮次与 Optuna 参数；纹理 stage 每 trial 先渲染 beauty 再渲染 proxy（`pass_kind=texture_dual`）。**Optuna 主评分仍用 Proxy**，Beauty 仅用于人眼/VLM 审查（含暗场曝光、bump 放大等审查专用后处理，不影响 proxy 分数）。
+
+```powershell
+# 每帧自动刷新窗口
+python scripts/calibrate.py --scope finish `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --live-review
+
+# 人工 gate：每帧点 Continue 才继续下一轮 trial
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --live-review --live-review-wait
+
+# VLM 自主闭环 + Live Review
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --texture-trials 12 `
+  --texture-vlm-loop `
+  --texture-vlm-max-rounds 3 `
+  --live-review
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--live-review` | 弹出 tkinter 桌面窗口（Beauty \| Proxy 双栏） |
+| `--live-review-wait` | 阻塞直到窗口点 Continue |
+| `--live-review-no-beauty-trials` | 纹理 trial 不额外 beauty（仅 export 时 `beauty_best`） |
+| `--texture-vlm-loop` | 多轮 Optuna → VLM 评价 → 自动调 bounds；产物 `texture_vlm_loop.json` |
+| `--texture-vlm-max-rounds` | VLM 闭环最大轮数（默认 3） |
+| `--texture-vlm-pass-score` | VLM overall_score 达标阈值（默认 0.72） |
+
+产物：`calibrate_out/live_review/current.png`（最新帧副本）。事后复核仍用 Admin `/admin/calibration`。
+
+### 定稿验收（preset 写入后）
+
+材质 + 纹理 preset 定稿后，用生产全栈路径验收（**勿**用 `--calibration` 模式的 `preview.py`，该模式会剥掉漆面砂纹）：
+
+```powershell
+cd blenderworker
+$env:PYTHONPATH = "src"
+
+# 金属球 + 平板 compare_triple
+python scripts/acceptance_finish.py --finish-id outdoor_sand
+
+# 从 VLM 各轮中选 feature 最高一轮写入 preset（可与 pipeline 最终选中 trial 不同）
+python scripts/write_feature_best_round.py outdoor_sand
+
+# 仅金属球预览（生产 resolve_finish_cfg）
+python scripts/preview.py --finish outdoor_sand --texture outdoor_sand --samples 256
+```
+
+| 产物 | 路径 |
+|------|------|
+| 金属球验收 | `calibrate_out/acceptance_<id>/shader_ball.png` |
+| 平板三栏 | `calibrate_out/texture_<id>/compare_triple.png` |
+
 ### 全流程（`--scope full`）
 
 ```powershell

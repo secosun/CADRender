@@ -16,6 +16,8 @@ scripts/calibrate.py                    ← 唯一 CLI 入口
             shared/
                 scene_sphere.py
                 scene_texture_panel.py
+                live_review.py               ← 校准中桌面双栏审查
+                texture_vlm_loop.py          ← VLM 多轮闭环 + bounds 调整
                 scoring_reference.py
                 finish_resolve.py          ← 铝基材 + 漆面 merge
                 write_presets.py
@@ -188,6 +190,10 @@ python scripts/calibrate.py --scope category `
 | `--dry-run` | 打印变更预览 |
 | `--material-trials N` | 材质球 Optuna 轮数（默认 32） |
 | `--texture-trials N` | 纹理 Optuna 轮数（warm-start 默认 10，否则 50） |
+| `--texture-vlm-loop` | 纹理多轮：每轮 Optuna 后 VLM 评 proxy vs 参考，自动调 bounds |
+| `--texture-vlm-max-rounds` | VLM 闭环最大轮数（默认 3） |
+| `--texture-vlm-pass-score` | VLM overall_score 达标阈值（默认 0.72） |
+| `--live-review` / `--live-review-wait` | 校准中桌面双栏审查 |
 | `--search-samples` / `--confirm-samples` | 256 / 1024 spp（材质确认阶段） |
 | `--skip-confirm` | 材质球跳过 1024spp 确认 |
 | `--use-vlm` | 纹理或类目阶段启用 VLM 精调 |
@@ -195,13 +201,54 @@ python scripts/calibrate.py --scope category `
 
 ### 审查 UI
 
+| 方式 | 说明 |
+|------|------|
+| **Live Review（校准中）** | `--live-review` 弹出桌面窗口：**上一张 / 当前** 双栏对比，每栏内 **Beauty PBR \| Proxy 伪彩**；底部显示当前 trial 参数；`--live-review-wait` 需点 Continue 才继续 |
+| **验收渲染（定稿后）** | `scripts/acceptance_finish.py`：生产全栈金属球 + 平板 `compare_triple`（见下节） |
+| Admin 事后复核 | `/admin/calibration`（需挂载 `calibrate_out`） |
+
 | Tab | 内容 |
 |-----|------|
 | 材质校准 | 球体 PBR trial + confirm（**不含** reference 纹理 trial） |
 | 纹理校准 | 平板 trial + `compare_triple.png` 三栏对比 |
 | 类目校准 | 产品 Top-K 候选 |
 
-Admin：`/admin/calibration`（需挂载 `calibrate_out`）
+```powershell
+# 校准中实时看图（每张 beauty 额外渲染，耗时约 ×2）
+python scripts/calibrate.py --scope finish `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --live-review
+
+# 人工 gate：每帧点 Continue 再继续 Optuna
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --live-review --live-review-wait
+```
+
+产物：`calibrate_out/live_review/current.png`（最新帧）、`human_scores.jsonl`（将来评分写入）。
+
+### 定稿验收（材质 + 纹理写入 preset 后）
+
+```powershell
+cd blenderworker
+$env:PYTHONPATH = "src"
+
+# 金属球（生产全栈：基材 + 漆层 + 砂纹）+ 平板 compare_triple
+python scripts/acceptance_finish.py --finish-id outdoor_sand
+
+# 从 VLM 各轮中选 feature 最高一轮写入 preset（非最终 VLM 选中 trial）
+python scripts/write_feature_best_round.py outdoor_sand
+
+# 仅金属球预览（勿用 --calibration，该模式会剥掉漆面砂纹）
+python scripts/preview.py --finish outdoor_sand --texture outdoor_sand --samples 256
+```
+
+| 产物 | 路径 |
+|------|------|
+| 金属球验收 | `calibrate_out/acceptance_<id>/shader_ball.png` |
+| 平板三栏 | `calibrate_out/texture_<id>/compare_triple.png` |
 
 ## 产物与报告
 
