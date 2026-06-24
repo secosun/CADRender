@@ -34,7 +34,24 @@
 | 基材 `brushed_aluminum_voronoi` | `metallic=1`、各向异性、`substrate_brush`（Voronoi 拉丝） |
 | 漆面 finish | 漆色、`coat_*`、M_Bakecoat 砂纹参数 |
 
-生产材质节点：**Voronoi 拉丝（Anisotropic）+ M_Bakecoat 砂纹（Coat Normal / Roughness）** 同栈叠加。
+生产材质节点：**Voronoi 拉丝（Anisotropic）→ 主 BSDF Normal；M_Bakecoat 砂纹 → Coat Normal + Coat Roughness** 同栈叠加。
+
+### Principled 主 BSDF vs Coat（物理分层）
+
+Blender 4.x Principled 中，主 BSDF 与 Coat 是**分层光传输**，不是参数简单叠加：
+
+| 层 | 物理角色 | 我们的参数 |
+|----|----------|------------|
+| **主 BSDF** | 铝型材本体（Metallic、Base Color、低 Roughness、拉丝 Normal） | `substrate_finish_id` + `roughness≈0.25` |
+| **Coat** | 喷涂漆膜（IOR、Coat Roughness、Coat Normal、Coat Tint） | `coat_weight≈1.0` + M_Bakecoat 程序化 |
+
+接线规则（`core/bakecoat_targets.py` + `material_builders.py`）：
+
+- `connect_roughness_to_coat: true` → M_Bakecoat **Roughness → Coat Roughness**（橘皮/哑光）
+- M_Bakecoat **Normal → Coat Normal**（漆膜微观起伏；按 `coat_normal_strength` 放大）
+- **禁止**砂纹 roughness 同时接主 BSDF（喷漆后铝底不可见，主 Roughness 仅保暗部金属反射）
+- 材质球校准：`lock_substrate_roughness` 锁定铝底 Roughness，只搜 `coat_weight` / `coat_roughness`
+- 验收/预览：`purpose=acceptance` 使用亮场灯光，与校准暗场分离
 
 ## 在统一管线中的位置
 
