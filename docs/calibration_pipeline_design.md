@@ -3,6 +3,18 @@
 ## 定位
 
 CADRender 的 look-dev 校准目标是：**让 catalog 出图风格稳定、可复现**，而非实验室 BRDF 测量。
+
+**业务产出公式**：
+
+```
+高清效果图 = 参数化模型 × 可选材质(finish) × 可选纹理(texture) × 场景(category/scene)
+```
+
+- **生产入口**：`scripts/render.py`（`--model` / finish / texture / `--category` / `--scene`）  
+- **校准分工**：Material → Texture → Category 分维定稿，**组合态验收**（见 [texture_calibration_roadmap.md](./texture_calibration_roadmap.md) §1）  
+- **当前阻塞**：**纹理维（outdoor_sand）** — 风险最高，必须先解阻塞；category 批量与其余 finish **冻结**（见 roadmap §0）  
+- 纹理平板 PASS ≠ 业务 PASS；必须在代表产品模型 + 场景上复验 HD 成片  
+
 所有校准入口收敛为 **一个 CLI**（`scripts/calibrate.py`），通过 `--scope` 选择子模块组合。
 
 ```
@@ -32,6 +44,8 @@ scripts/calibrate.py                    ← 唯一 CLI 入口
 | **Category** | 代表产品模型 + 全管线 | Gate / CV / 可选 VLM | `product_presets.json` |
 
 **铝型材 + 喷涂**：Finish 名（如 `outdoor_sand`）是 **漆面纹理**，不是独立基材。通过 `substrate_finish_id: brushed_aluminum_voronoi` 合并拉丝铝；Ball 定基材与漆层，Plane 定砂纹颗粒（见 `finish_resolve.py`）。
+
+**执行优先级（2026-06-25）**：Texture 子模块为 **P0 阻塞**；Material 可锁定配合；Category **延后**至 outdoor_sand 纹理在 `render.py` 成片 PASS。
 
 **为什么材质用球、纹理用参考图？**
 
@@ -102,11 +116,14 @@ flowchart LR
 - **硬约束**：无 `--reference` 拒绝启动。
 - **生产材质**：`build_bakecoat_principled` + `M_Bakecoat`（禁止简化节点树）。
 - **场景**：`CalPanel` 平板 + Key/Fill 掠射光 + 暗世界光；`base_color` 固定中灰（颜色解耦）。
-- **评分**：对称预处理 + **bakecoat roughness 特征 pass** 作为主评分图（避免 beauty 平坦）
+- **评分**：对称预处理 + **bakecoat roughness 特征 pass**（paint-only，无基材 Voronoi）+ **方向性 isotropy 惩罚**（20%）
+- **Beauty 审查**：paint-only + 完整 coat 栈；trial 512²，export 768²
+- **Live Review**：每 trial **先 proxy（~20s）再 beauty 双栏**
 - **搜索**：单阶段多变量 Optuna（`bump`、`micro/fine`、`rough_mix_factor`、`rough_ramp`）。
 - **可选 VLM**：特征 top-3 → 人眼相似度精调。
 - 写入：`finishes/<id>.json` + `texture_profiles/<id>.json`
 - 详见 [texture_calibration_design.md](./texture_calibration_design.md)
+- **推进顺序**：Phase 0 仅 outdoor_sand → [texture_calibration_roadmap.md](./texture_calibration_roadmap.md)（含业务四维、调研报告对齐、纹理双轨）
 
 ## Category 子模块
 
@@ -190,6 +207,8 @@ python scripts/calibrate.py --scope category `
 | `--dry-run` | 打印变更预览 |
 | `--material-trials N` | 材质球 Optuna 轮数（默认 32） |
 | `--texture-trials N` | 纹理 Optuna 轮数（warm-start 默认 10，否则 50） |
+| `--texture-eevee-preview` | 纹理 Optuna 阶段使用 EEVEE Next 加速 ~10x，随后 Cycles 精调 |
+| `--texture-refine-cycles-trials N` | Cycles 精调 trial 数（默认 8，仅 `--texture-eevee-preview` 时生效） |
 | `--texture-vlm-loop` | 纹理多轮：每轮 Optuna 后 VLM 评 proxy vs 参考，自动调 bounds |
 | `--texture-vlm-max-rounds` | VLM 闭环最大轮数（默认 3） |
 | `--texture-vlm-pass-score` | VLM overall_score 达标阈值（默认 0.72） |
@@ -203,7 +222,7 @@ python scripts/calibrate.py --scope category `
 
 | 方式 | 说明 |
 |------|------|
-| **Live Review（校准中）** | `--live-review` 弹出桌面窗口：**上一张 / 当前** 双栏对比，每栏内 **Beauty PBR \| Proxy 伪彩**；底部显示当前 trial 参数；`--live-review-wait` 需点 Continue 才继续 |
+| **Live Review（校准中）** | `--live-review` 弹出桌面窗口：**上一张 / 当前** 双栏；每栏 **Beauty PBR \| Proxy 伪彩**；纹理 trial **先推送 proxy、再 beauty**；`--live-review-wait` 需点 Continue |
 | **验收渲染（定稿后）** | `scripts/acceptance_finish.py`：生产全栈金属球 + 平板 `compare_triple`（见下节） |
 | Admin 事后复核 | `/admin/calibration`（需挂载 `calibrate_out`） |
 
@@ -225,6 +244,14 @@ python scripts/calibrate.py --scope texture `
   --finish-id outdoor_sand `
   --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
   --live-review --live-review-wait
+
+# 归档上一轮 → 重跑 → 自动对比（round_comparison.md）
+python scripts/run_texture_cal_round.py `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --archive-label pre_isotropy_paint_only `
+  --texture-trials 24 --texture-vlm-max-rounds 1 `
+  --live-review --no-auto-write
 ```
 
 产物：`calibrate_out/live_review/current.png`（最新帧）、`human_scores.jsonl`（将来评分写入）。
@@ -256,7 +283,8 @@ python scripts/preview.py --finish outdoor_sand --texture outdoor_sand --samples
 |------|------|
 | `calibrate_out/calibration_pipeline_report.json` | 全 pipeline 摘要 |
 | `calibrate_out/material_<id>/` | 材质球 trial / confirm / validation |
-| `calibrate_out/texture_<id>/` | 纹理平板 trial / vlm 候选 |
+| `calibrate_out/texture_<id>/` | 纹理平板 trial / vlm 候选 / `round_comparison.md` |
+| `calibrate_out/texture_<id>/archive/` | 上一轮归档（`run_texture_cal_round.py`） |
 | `calibrate_out/<cam>/category_calibration_report.json` | 类目校准报告 |
 
 ## 环境

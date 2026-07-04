@@ -41,10 +41,10 @@ finish_resolve.py（merge_substrate_finish）
        ▼
 calibrate.py --scope finish
   MaterialModule（球）→ 漆层 PBR + 基材各向异性
-  TextureModule（板）→ bakecoat 砂纹 vs 蚁力参考
+  TextureModule（板）→ **paint-only** 砂纹 vs 蚁力参考（Optuna；生产/验收仍全栈）
        │
        ▼
-build_bakecoat_principled（生产：Voronoi 拉丝 + M_Bakecoat 同栈）
+build_bakecoat_principled（生产：Voronoi 拉丝 + M_Bakecoat → **Coat Normal** + Coat Roughness）
 ```
 
 无 `substrate_finish_id` 的 finish 仍走原单材质球路径（plain Principled + 可选 bakecoat）。
@@ -188,7 +188,58 @@ python scripts/calibrate.py `
 python scripts/render_texture_review.py --finish-id outdoor_sand
 ```
 
-Ball：铝基材 + 漆层 PBR；Plane：对照蚁力参考搜砂纹。详见 [texture_calibration_design.md](./texture_calibration_design.md)。
+Ball：铝基材 + 漆层 PBR；Plane：对照蚁力参考搜砂纹。详见 [texture_calibration_design.md](./texture_calibration_design.md)。**业务 KPI**：模型 + finish + texture + category → HD 成片（[roadmap §1](./texture_calibration_roadmap.md)）；当前仅推进 outdoor_sand。
+
+### outdoor_sand 纹理：细砂程序化训练（v37，推荐）
+
+工业路径分三阶段；v37 在指纹对齐基础上 **恢复光学 rough_mix**、细尺度 micro，Beauty PBR **30% rerank**，避免 v36「石块感」。
+
+```
+蚁力 23 张 crop
+    → analyze_procedural_fit.py（去光照 delit + 统计聚合）
+    → procedural_fit_report.json + texture_target_bump_proxy.png
+    → Optuna：70% proxy 指纹 + 30% G1 Beauty PBR（procedural_fit_a_lite）
+    → G1 验收：compare_beauty_pbr vs outdoor_sand_07
+```
+
+| 阶段 | 产物 | 作用 |
+|------|------|------|
+| **提取** | `calibrate_out/texture_outdoor_sand/procedural_fit/` | 统计指纹 + 参数初值 |
+| **训练** | `v37_sand_grain/texture_outdoor_sand/` | 细砂区间搜参（micro≈250–380，bump≤0.032，rough_mix 0.5–0.78） |
+| **验收** | `compare_beauty_pbr.png` | 人眼主准绳；G1 不再放大 `coat_normal_strength` |
+
+**要点**：
+
+- 搜索中心对齐生产 preset 数量级（`micro_scale≈295`，`micro_detail≈9`），**非** v36 的粗块区间（72–108）。
+- `lock_rough_modulation: false`：砂纹主要靠 **coat roughness 橘皮**，不单靠几何 bump。
+- Voronoi 团簇/缺陷层 bounds 压至 ≈0，避免石块斑纹。
+- v36（bump-only + 粗 micro）保留作 smoke 对照。
+
+**Step 0 — 提取纹理（无 Blender，改 crop 后重跑）**
+
+```powershell
+cd blenderworker
+$env:PYTHONPATH = "src"
+python scripts/analyze_procedural_fit.py `
+  --finish outdoor_sand `
+  --out calibrate_out/texture_outdoor_sand/procedural_fit
+```
+
+**Step 1 — v37 校准**
+
+```powershell
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_07.png `
+  --texture-refine-json calibrate_configs/texture_outdoor_sand_v37_sand_grain.json `
+  --output-dir calibrate_out/texture_outdoor_sand/v37_sand_grain `
+  --texture-trials 16 `
+  --no-auto-write
+```
+
+配置文件：`calibrate_configs/texture_outdoor_sand_v37_sand_grain.json`。
+
+旧路径 `beauty_bump_a_lite` + `a_lite_pbr_weight: 1`（如 v35b）已弃用；v36（`a_lite_pbr_weight: 0`）易 Beauty 像石头。
 
 ### Live Review（校准中实时看图）
 
@@ -199,7 +250,14 @@ Ball：铝基材 + 漆层 PBR；Plane：对照蚁力参考搜砂纹。详见 [te
 | **上行** | 上一张 trial | 当前 trial |
 | **列内** | Beauty PBR \| Proxy 伪彩 | Beauty PBR \| Proxy 伪彩 |
 
-底部显示当前轮次与 Optuna 参数；纹理 stage 每 trial 先渲染 beauty 再渲染 proxy（`pass_kind=texture_dual`）。**Optuna 主评分仍用 Proxy**，Beauty 仅用于人眼/VLM 审查（含暗场曝光、bump 放大等审查专用后处理，不影响 proxy 分数）。
+底部显示当前轮次与 Optuna 参数。纹理 stage 每 trial **先推送 proxy（~20s），再渲染 beauty 双栏**（`texture_dual`）。**v37** 目标 = 70% proxy 指纹 + 30% Beauty PBR；**v36** 仅指纹（Beauty 权重 0，易石块感）。
+
+**2026-06 设计要点**（各向同性砂纹）：
+
+- 校准 **paint-only**：不含铝基材 Voronoi，避免拉丝方向污染搜索
+- Feature 含 **20% 方向性 isotropy** 惩罚
+- `bump_strength` 搜索 **0.02–0.10**；`micro_scale` 下限 **250**
+- 生产 / 验收球仍用 **全栈** `resolve_finish_cfg`
 
 ```powershell
 # 每帧自动刷新窗口
@@ -222,6 +280,14 @@ python scripts/calibrate.py --scope texture `
   --texture-vlm-loop `
   --texture-vlm-max-rounds 3 `
   --live-review
+
+# 归档上一轮 → 重跑 → 自动对比（round_comparison.md）
+python scripts/run_texture_cal_round.py `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --archive-label pre_isotropy_paint_only `
+  --texture-trials 24 --texture-vlm-max-rounds 1 `
+  --live-review --no-auto-write
 ```
 
 | 参数 | 说明 |

@@ -1,5 +1,10 @@
 # 纹理校准设计思想
 
+> **2026-07 修订**：新增 EEVEE 预览加速（`--texture-eevee-preview`），Optuna 搜索阶段使用 EEVEE Next 加速 ~10x，随后 Cycles 精调。  
+> **2026-06 修订**：paint-only 校准栈、direction isotropy 评分（20%）、Coat Normal 接线修复、Live Review 先 proxy 后 beauty、`run_texture_cal_round.py` 归档对比。  
+> **业务公式**：`模型 × finish × texture × category → HD 成片` — 见 [texture_calibration_roadmap.md §1](./texture_calibration_roadmap.md)。  
+> **推进策略**：先 outdoor_sand 四维组合定稿，再按 [roadmap](./texture_calibration_roadmap.md) 扩展。
+
 ## 背景
 
 产品均为 **铝型材 + 喷涂漆面**。Finish 名称（如 `outdoor_sand`）表示 **漆面纹理/外观**，不是另一种基材。
@@ -49,6 +54,7 @@ Blender 4.x Principled 中，主 BSDF 与 Coat 是**分层光传输**，不是�
 
 - `connect_roughness_to_coat: true` → M_Bakecoat **Roughness → Coat Roughness**（橘皮/哑光）
 - M_Bakecoat **Normal → Coat Normal**（漆膜微观起伏；按 `coat_normal_strength` 放大）
+- **实现注意**：Blender 4.x 节点组 `node.type == "GROUP"`（非旧版 `ShaderNodeGroup`）；`_apply_anisotropy_and_coat` 与 `_attach_m_bakecoat_group` 必须在 `paint_on_coat` 时接线，否则全漆层下砂纹不可见。
 - **禁止**砂纹 roughness 同时接主 BSDF（喷漆后铝底不可见，主 Roughness 仅保暗部金属反射）
 - 材质球校准：`lock_substrate_roughness` 锁定铝底 Roughness，只搜 `coat_weight` / `coat_roughness`
 - 验收/预览：`purpose=acceptance` 使用亮场灯光，与校准暗场分离
@@ -67,6 +73,8 @@ MaterialModule（球体 · 铝基材+漆层 PBR）→ TextureModule（平板 · 
 |----|------|
 | 子模块 | `orchestration/calibration/texture_module.py` |
 | 引擎 | `orchestration/calibration/texture_engine.py` |
+| 节点构建 | `core/material_builders.py`（Coat Normal、`GROUP` 类型） |
+| 归档重跑 | `scripts/run_texture_cal_round.py` |
 | VLM 闭环 | `orchestration/calibration/shared/texture_vlm_loop.py` |
 | Live Review | `orchestration/calibration/shared/live_review.py` |
 | 场景常量 | `orchestration/calibration/shared/scene_texture_panel.py` |
@@ -98,16 +106,50 @@ build_bakecoat_principled() → M_Bakecoat（micro / fine / hyperfine bump 叠�
 
 禁止在校准中使用简化 Noise+单 Bump 节点树（否则搜到的参数无法迁移到生产）。
 
-### 4. 纹理平板 + 掠射光场景
+### 4. 纹理平板场景
+
+**Proxy 评分 pass**（Optuna 主依据）：
 
 | 要素 | 说明 |
 |------|------|
-| 几何 | `CalPanel` 平面（约 0.3×0.4 m），与色块平面一致 |
-| 相机 | 低仰角（~84°），掠射观察 |
-| 灯光 | Area Key（强）+ 弱 Fill；暗世界光 |
-| 目的 | 让 bump / rough_mix 产生可见明暗，否则特征提取无信号 |
+| 几何 | `CalPanel` 平面（约 0.3×0.4 m） |
+| 材质 | **paint-only**：仅 M_Bakecoat 砂纹漆层，**不含** `substrate_brush` / Voronoi 拉丝 |
+| 坐标 | `mapping.coord = OBJECT`，`scale = [1,1,1]`（严禁拉伸，避免伪斜纹） |
+| principled | 中性灰、`coat_weight=0`（proxy 只看 roughness emission，与生产 coat 栈解耦） |
+| 相机 | 正交或低仰角，与特征 pass 一致 |
 
-材质球场景 **不用于** 纹理校准。
+**Beauty 审查 pass**（人眼 / Live Review / `beauty_best.png`）：
+
+| 要素 | 说明 |
+|------|------|
+| 材质 | **paint-only** + 完整 **coat 栈**（`coat_weight=1`、`connect_roughness_to_coat`）；`anisotropic=0` |
+| 相机 | 微距透视（~110–125 mm），面板倾角 ~28°（弱梯度，减少假斜纹） |
+| 灯光 | 较大面积 Key + 较强 Fill（约 0.52 / 0.38 W），弱世界光 |
+| 分辨率 | trial 内 **512² / 96 spp**；export `beauty_best` **768² / 192 spp** |
+| bump / rough_mix | **与 proxy 相同**（`_flat_params_to_bakecoat`，无 ×1.12 等审查 fudge） |
+| principled | coat 栈 + `anisotropic=0`（仅 PBR 层，不改 bakecoat 数值） |
+
+材质球场景 **不用于** 纹理校准。铝基材拉丝仅在 **生产渲染 / `acceptance_finish.py` 金属球** 中可见。
+
+### 4.1 模块独立与定稿参数（Proxy 为唯一真源）
+
+TextureModule 与 Material / Category **解耦**。纹理维交付物：
+
+| 交付物 | 含义 | 是否写入 preset |
+|--------|------|----------------|
+| **`best_params`** | proxy Optuna 最优 trial 的 8 参 | ✅ `texture_profiles` + `finishes.bakecoat_procedural` |
+| **`proxy_best.png`** | 上述参数在平板场景的 **可视化**（伪彩审查） | 审查图 |
+| **`proxy_texture.png`** | 同上参数的 roughness 细节 pass | 审查 / VLM 闭环输入 |
+| **`beauty_best.png`** | 同 **proxy 参数** + Beauty 审查栈（coat PBR，仅光照/相机不同） | 人眼审查 |
+| **`vlm_rerank_params`** | Beauty VLM 在 top-3 上的建议（可选） | ❌  advisory |
+
+**原则**：
+
+1. 平板 proxy 可视化图对应的参数 **就是** 定稿参数；不存在「proxy 最优 trial A、写入 preset 却是 trial B」。  
+2. Beauty 与 proxy **bakecoat 参数完全一致**；差异仅在渲染 pass（伪彩 vs coat PBR + 微距光）。  
+3. Beauty 与 proxy **指标不混用**：Optuna / `best_score` / 写盘均来自 proxy Feature。  
+4. **可复用**的是 `best_params`（或贴图 asset），由 `texture_profile` 挂到任意模型。  
+5. 生产全栈在 `render.py` / `acceptance_finish` 上 **组合验收**。
 
 ### 5. 对称特征评分 + 可选 VLM
 
@@ -118,31 +160,36 @@ build_bakecoat_principled() → M_Bakecoat（micro / fine / hyperfine bump 叠�
 **做法**：
 
 1. 参考图与 trial 图 **同一套** `preprocess_reference` 后再提取特征。
-2. **Optuna 主评分使用 roughness 代理 pass**（micro/fine Noise + `rough_mix` + `rough_ramp` → Emission），与 `M_Bakecoat` 参数对齐、与光照解耦；trial 图应可见颗粒结构。
-3. 写入生产仍走完整 `build_bakecoat_principled` + `M_Bakecoat`。
-4. **Beauty 与 Proxy 分离**：Optuna 分数只来自 proxy pass；beauty pass 用于 Live Review / VLM / `beauty_best.png`，可施加审查专用 finish（暗场、bump×6、coat 法线加强等），**不得**反向污染 proxy 评分。
-5. 可选 `--use-vlm` 在 top-3 上精调；`--texture-vlm-loop` 启用多轮闭环（见下节）。
+2. **Optuna 主评分使用 roughness 代理 pass**（M_Bakecoat `rough_mix` + `rough_ramp` → Emission），与生产参数对齐、与光照解耦。
+3. **paint-only 栈**：校准/评分/Beauty 审查均剥离 `substrate_brush`，避免 Voronoi 拉丝污染「各向同性砂纹」搜索。
+4. **方向性惩罚**：梯度方向熵（isotropy）占 feature 分 **20%**，抑制「斜拉丝/拉伸 noise」高分解。
+5. 写入生产仍走完整 `resolve_finish_cfg`（铝基材 + coat + M_Bakecoat）。
+6. **Beauty 与 Proxy 分离**：Optuna 分数只来自 proxy；beauty 用于 Live Review / 人眼审查。
+7. **定稿参数 = proxy Optuna 最优 trial**；`proxy_best.png` / `proxy_texture.png` 与该参数 **一一对应**（见 §4.1）。
+8. 可选 `--use-vlm`：在 feature top-3 上对 **Beauty** 图打分，结果写入 `vlm_rerank_params`，**不覆盖**定稿参数。
+9. `--texture-vlm-loop` 闭环对比 **`proxy_texture.png`**（非 beauty）。
 
 ```
-score = 0.85 × cosine_similarity(features_render, features_ref)
-      + 0.15 × texture_richness_norm
+feature = 0.28 × mean_similarity
+        + 0.52 × structure（GLCM + Sobel）
+        + 0.20 × direction_isotropy_match
 ```
 
-校准平板另设：`coat_weight=0`、Triplanar mapping、点光源（辅助预览）。
+（旧版仅 similarity + structure，易奖励有纹理但方向错误的 trial。）
 
 ### 6. 搜索空间（砂纹等 noise 类 finish）
 
-| 参数 | 说明 |
-|------|------|
-| `bump.strength` | 全局凹凸 |
-| `micro.scale / detail` | 主颗粒尺度 |
-| `fine.scale / detail` | 细层 |
-| `rough_mix_factor` | 程序化粗糙度混合（砂纹视觉核心） |
-| `rough_ramp.to_min / to_max` | 空间粗糙度变化范围 |
+| 参数 | 说明 | 默认 bounds（2026-06） |
+|------|------|------------------------|
+| `bump.strength` | 光学橘皮，极弱 | **0.02 – 0.10** |
+| `micro.scale / detail` | 主颗粒尺度（≈200–400 μm 视觉） | scale **≥ 250**，detail 5–10 |
+| `fine.scale / detail` | 细层 | scale 400–1800，detail 6–11 |
+| `rough_mix_factor` | 程序化粗糙度混合 | 0.40 – 0.80 |
+| `rough_ramp.to_min / to_max` | 空间粗糙度变化 | 0.40–0.72 / 0.62–0.90 |
 
 `principled` 在纹理阶段 **锁定**（由 MaterialModule 产出），不在此重复搜索。
 
-单阶段多变量 Optuna TPE；每 trial 保存完整 `full_params`，避免分 phase 丢参。
+单阶段多变量 Optuna TPE；每 trial 保存完整 `full_params`。
 
 ### 7. 纹理类型与节点（生产侧）
 
@@ -166,6 +213,101 @@ catalog_colors.json             ← 颜色（独立维度）
 
 `resolve_texture_profile_bakecoat()` 在渲染时合并 texture_profile → finish。
 
+## 9. EEVEE 预览加速（`--texture-eevee-preview`）
+
+纹理校准的 Optuna 搜索阶段默认使用 Cycles 渲染每个 trial。对于 50 trial 的搜索，总渲染时间约 50-60 分钟。
+
+`--texture-eevee-preview` 将搜索分成两阶段：
+
+### 两阶段流程
+
+```
+阶段 1（EEVEE Next, 快速）
+  Optuna 50 trial 全部使用 EEVEE Next 渲染
+  每个 trial ~1-3s（proxy） + ~2-5s（beauty）
+  总时间 ~5 分钟
+
+阶段 2（Cycles, 精调）
+  自动切换到 Cycles
+  围绕阶段 1 最优参数 ±5% 范围，8 trial 精调
+  每个 trial ~15-30s，总时间 ~3-5 分钟
+
+最终 export（beauty_best.png / proxy_best.png）
+  始终使用 Cycles 渲染，保证交付质量
+```
+
+### 原理
+
+纹理校准的平板场景极其简单——单个平面 + 两盏太阳灯，无复杂反射/折射/全局光照。EEVEE Next 在此场景下渲染质量与 Cycles 高度一致：
+
+| 渲染类型 | 与 Cycles 差异 | 信任度 |
+|---------|---------------|--------|
+| **Proxy feature pass**（Emission 直出） | **≈0%** — Emission 计算引擎无关 | 完全可信 |
+| **Beauty 结构评分**（LBP/GLCM/Sobel） | **极低** — LBP 对单调光度变化不变 | 高可信 |
+
+评分函数（FFT 频域分析、Sobel 边缘密度、各向同性）基于 2D 图像特征，相对鲁棒。
+
+### 精度保障
+
+两阶段设计提供三层保障：
+
+1. **EEVEE 粗搜索**：快速定位最优参数区域（~85% 概率直接命中全局最优）
+2. **Cycles 精调**：围绕最优区域 ±5% 范围做少量精调，补偿引擎间系统性偏移
+3. **最终 export**：始终使用 Cycles 高质量渲染，`beauty_best.png` 不受影响
+
+### 使用方式
+
+```powershell
+cd blenderworker
+
+# 新流程（推荐）
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --texture-eevee-preview `
+  --texture-refine-cycles-trials 8
+
+# 同时使用 VLM 闭环
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --texture-eevee-preview `
+  --texture-vlm-loop
+
+# 传统 Cycles-only（不受影响）
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png
+```
+
+### 新增 CLI 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--texture-eevee-preview` | `False` | 启用 EEVEE Next 加速搜索；不加此参数行为不变 |
+| `--texture-refine-cycles-trials` | `8` | Cycles 精调 trial 数（仅 `--texture-eevee-preview` 时生效） |
+
+### 实现
+
+核心代码入口 `calibrate_texture_reference()`（`texture_engine.py`）：
+
+```python
+# 场景创建后，若启用 EEVEE 预览：
+_setup_texture_eevee(client)          # EEVEE Next, 64 TAA samples
+
+# Optuna 搜索完成（所有 trial 使用 EEVEE）
+
+# 切换到 Cycles 精调：
+_setup_texture_cycles(client, 256)    # Cycles, 256 samples, adaptive
+# 在最优参数 ±5% 范围内，使用 random.Random(42) 产生扰动 trial
+study.enqueue_trial(perturbed)
+study.optimize(objective, n_trials=n_refine)
+
+# 最终 export 始终使用 Cycles（export_texture_review_artifacts）
+```
+
+`_render_panel()` 中的 `cycles.samples` 访问已用 `try/except AttributeError` 包裹，在 EEVEE 引擎下自动跳过。
+
 ## 与材质校准的关系
 
 ```
@@ -174,11 +316,20 @@ material_calibrate（球体）
   无 substrate：Phase 1 plain BSDF → principled
 
 texture_engine（平板 + 参考图）
-  锁定 principled → 搜 bakecoat 砂纹 + rough_mix
-  Beauty 审查（有基材时）保留 metallic/coating，非纯灰非金属板
+  paint-only M_Bakecoat → 搜砂纹 + rough_mix（无 Voronoi 基材）
+  Beauty 审查：完整 coat 栈 + dielectric 漆色，anisotropic=0
+  生产 / 验收球：resolve_finish_cfg 全栈（铝拉丝 + 砂纹漆）
 ```
 
 **不要**在 `--scope material` 默认路径上期望纹理收敛；砂纹/户外漆用 `--scope finish` 或 `--scope texture`。
+
+### 校准 vs 生产（路径分离）
+
+| 路径 | 基材 Voronoi | Coat 栈 | 用途 |
+|------|-------------|---------|------|
+| TextureModule proxy | ❌ paint-only | emission 特征 pass | Optuna 评分 |
+| TextureModule beauty | ❌ paint-only | ✅ 完整 coat | Live Review / compare_beauty_pbr |
+| `acceptance_finish` / `render.py` | ✅ | ✅ | 定稿验收 / 生产 |
 
 ## VLM 自主闭环（`--texture-vlm-loop`）
 
@@ -248,6 +399,23 @@ python scripts/calibrate.py `
 
 # 仅重导审查三栏图（不重新 Optuna）
 python scripts/render_texture_review.py --finish-id outdoor_sand
+
+# ── EEVEE 加速纹理校准（~10x 更快）──
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --texture-eevee-preview `
+  --texture-refine-cycles-trials 8
+
+# 归档上一轮 + 重跑 + 自动对比（产物 round_comparison.md）
+python scripts/run_texture_cal_round.py `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --archive-label pre_isotropy_paint_only `
+  --texture-trials 24 `
+  --texture-vlm-max-rounds 1 `
+  --live-review `
+  --no-auto-write
 ```
 
 | `--scope` | 本模块 | 说明 |
@@ -264,6 +432,10 @@ python scripts/render_texture_review.py --finish-id outdoor_sand
 | 路径 | 内容 |
 |------|------|
 | `calibrate_out/texture_<id>/trial_*.png` | 各 trial 平板渲染 |
+| `calibrate_out/texture_<id>/trial_*_preview.png` | proxy 审查帧 |
+| `calibrate_out/texture_<id>/trial_*_beauty.png` | beauty 审查帧 |
+| `calibrate_out/texture_<id>/archive/<stamp>_*` | 上一轮归档 |
+| `calibrate_out/texture_<id>/round_comparison.md` | 与归档轮次自动对比 |
 | `calibrate_out/texture_<id>/vlm_*.png` | VLM 候选 |
 | `texture_profiles/<id>.json` | bakecoat 模板 |
 | `finishes/<id>.json` | bakecoat 同步写入 |
@@ -287,4 +459,5 @@ python scripts/render_texture_review.py --finish-id outdoor_sand
 
 ## 进行中的待办
 
-outdoor_sand 纹理校准执行清单与验收标准见 **[outdoor_sand_calibration_backlog.md](./outdoor_sand_calibration_backlog.md)**。
+- **Phase 0（当前）**：outdoor_sand 端到端定稿 → [outdoor_sand_calibration_backlog.md](./outdoor_sand_calibration_backlog.md)
+- **Phase 1+（暂缓）**：其余蚁力纹理、通用 bounds、brush 节点扩展 → [texture_calibration_roadmap.md](./texture_calibration_roadmap.md)
