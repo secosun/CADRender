@@ -1,6 +1,6 @@
 # 纹理校准设计思想
 
-> **2026-07 修订**：新增 EEVEE 预览加速（`--texture-eevee-preview`），Optuna 搜索阶段使用 EEVEE Next 加速 ~10x，随后 Cycles 精调。  
+> **2026-07 修订**：新增纹理贴图提取管线（`extract_texture_map.py` + `--use-texture-map`），从蚁力色卡提取干净贴图作为程序化拟合的评分目标，提升评分信噪比。  
 > **2026-06 修订**：paint-only 校准栈、direction isotropy 评分（20%）、Coat Normal 接线修复、Live Review 先 proxy 后 beauty、`run_texture_cal_round.py` 归档对比。  
 > **业务公式**：`模型 × finish × texture × category → HD 成片` — 见 [texture_calibration_roadmap.md §1](./texture_calibration_roadmap.md)。  
 > **推进策略**：先 outdoor_sand 四维组合定稿，再按 [roadmap](./texture_calibration_roadmap.md) 扩展。
@@ -308,6 +308,76 @@ study.optimize(objective, n_trials=n_refine)
 
 `_render_panel()` 中的 `cycles.samples` 访问已用 `try/except AttributeError` 包裹，在 EEVEE 引擎下自动跳过。
 
+## 10. 纹理贴图提取管线（`--use-texture-map`）
+
+### 10.1 动机
+
+当前评分管线存在「评分双方不在同一域」的问题：
+
+```
+M_Bakecoat Feature_Signal (纯纹理, 无光照)  vs  蚁力色卡 crop (实物照片, 有光照/噪点/3D几何阴影)
+```
+
+虽然 `preprocess_reference()` 做了光照分离（high_low_separation），但实物照片的残留光照梯度、sensor 噪点、3D 微几何阴影无法完全去除。这导致 Optuna 有时收敛到「统计高分、人眼怪异」的解。
+
+**方案 B 贴图轨**：先提取干净纹理贴图，再让程序化噪波去拟合贴图→两边都在纯纹理域里比较。
+
+### 10.2 提取流程
+
+```
+蚁力色卡 crop
+  │
+  ├─ [内置模式] extract_texture_channels() + make_seamless_tile() + 去噪
+  └─ [外部工具] DeepBump / Substance 3D Sampler / Materialize 等
+  │
+  ▼
+outputs/yili_crops/<finish_id>/<finish_id>_texture_map.png
+  │
+  ▼
+calibrate.py --scope texture --use-texture-map
+  │
+  ▼
+M_Bakecoat 程序化噪波 → Feature_Signal → 对比贴图 → Optuna
+```
+
+### 10.3 命令行
+
+```powershell
+# 1. 提取贴图（内置模式）
+python scripts/extract_texture_map.py --finish-id outdoor_sand
+
+# 2. 提取贴图（外部工具，如 DeepBump 生成 roughness map）
+python scripts/extract_texture_map.py --finish-id outdoor_sand --external path/to/map.png
+
+# 3. 使用贴图作为参考重跑纹理校准
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --use-texture-map `
+  --texture-trials 24 `
+  --no-auto-write
+```
+
+### 10.4 提取质量保障
+
+| 检查项 | 指标 | 内置模式 | 外部模式 |
+|--------|------|---------|---------|
+| 光照残留 | `baseline_flatness_std < 5.0` | ✅ QA 门控 | 假设已满足 |
+| 无缝度 | `seam_intensity < 0.08` | ✅ `make_seamless_tile()` | 信任工具 |
+| 结构保留 | `raw_vs_map_ssim > 0.65` | ✅ 对比原图 | 信任工具 |
+| 高频噪声 | 高斯 sigma=0.5 | ✅ | 不处理 |
+
+每个提取结果写入 `_texture_map_qa.json`，不达标的贴图不会被 calibrate 使用。
+
+### 10.5 与现有评分的关系
+
+| 方面 | 传统模式 (crop direct) | 贴图模式 (--use-texture-map) |
+|------|----------------------|------------------------------|
+| 参考预处理 | `preprocess_reference()`（高通+去梯度+去光照） | `preprocess_texture_map()`（仅归一化+轻量去噪） |
+| 评分信号信噪比 | 低（光照残留+噪点） | 高（纯纹理域） |
+| 适用场景 | 快速验证、首次校准 | 精调定稿、程序化天花板附近 |
+| VLM 闭环对比 | proxy vs 实物照片 | proxy vs 干净贴图 |
+
 ## 与材质校准的关系
 
 ```
@@ -379,6 +449,16 @@ python scripts/calibrate.py `
   --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
   --texture-trials 10 `
   --use-vlm `
+  --no-auto-write
+
+# ── 纹理贴图提取 + 贴图参考校准（方案 B）──
+# 完整工作流见 docs/texture_map_extraction_guide.md
+python scripts/extract_texture_map.py --finish-id outdoor_sand
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ../outputs/yili_crops/outdoor_sand/outdoor_sand_crop.png `
+  --use-texture-map `
+  --texture-trials 24 `
   --no-auto-write
 
 # ── 推荐：材质球 + 纹理平板 一次性 ──

@@ -1,10 +1,10 @@
 # outdoor_sand 纹理校准待办
 
-> 状态快照：2026-06-25  
+> 状态快照：2026-07-12  
 > **阻塞级别**：🔴 **全项目最高风险 — 纹理必须先解阻塞**（仅 outdoor_sand，见下方顺序）  
 > **范围**：Phase 0 完成前 **不做** 其余 finish、不做 category 救片式重标定。  
 > **业务 KPI**：`模型 + finish + texture + category → HD 成片`（见 [roadmap §0–§1](./texture_calibration_roadmap.md)）  
-> 设计变更：**paint-only + isotropy + Coat Normal**（见 [texture_calibration_design.md](./texture_calibration_design.md)）
+> 设计变更：**paint-only + isotropy + Coat Normal + 贴图提取评分**（见 [texture_calibration_design.md](./texture_calibration_design.md)）
 
 ---
 
@@ -13,7 +13,7 @@
 | 步 | 门控 | 动作 | 未通过则 |
 |----|------|------|----------|
 | **G1** | 平板审查 | 目检 `compare_triple.png` / `beauty_best.png`；proxy 无斜纹 | 不进入 G2；可调 Round 2 或贴图 A/B |
-| **G2** | 表达路线 | **二选一定稿**：程序化 best（trial 19 一带）**或** 豆包无缝贴图 B 轨（产品 render 更优者） | 禁止写 preset |
+| **G2** | 表达路线 | **三选一定稿**：程序化 best（trial 19 一带）**或** 贴图提取 fit（`--use-texture-map`）**或** 豆包无缝贴图 B 轨（产品 render 更优者） | 禁止写 preset |
 | **G3** | Preset | `write_feature_best_round.py outdoor_sand`（或贴图 preset 手工写入） | — |
 | **G4** | 全栈球 | `acceptance_finish.py` 金属球可接受 | 回 G2 查 coat/基材，**不调 scene** |
 | **G5** | **解阻塞** | `render.py --model assets/guardrial.obj --category aluminum_6063` HD 成片人眼 PASS | 纹理仍阻塞；**禁止** category 大改救片 |
@@ -58,6 +58,7 @@
 | 1 | ✅ 完成 | **isotropy 轮校准** | Feature 0.495；见 `round_comparison.md` |
 | 2 | 🔄 **G1 阻塞** | **审查 compare_triple / beauty_best** | 中栏无斜纹；Beauty 颗粒可接受 |
 | 2b | 🔄 **进行中** | **M_Bakecoat v2**（团簇/柔边/缺陷） | 见 `docs/outdoor_sand_m_bakecoat_v2_plan.md` |
+| 2c | 🔄 **新增** | **纹理贴图提取（方案 B）** | `extract_texture_map.py` → `_texture_map.png` |
 | 3 | ⬜ **G2 阻塞** | **程序化 vs 贴图 A/B** | 同模型同场景选胜轨；**必做其一再写 preset** |
 | 4 | ⬜ G3 | **写 preset** | `write_feature_best_round.py outdoor_sand` |
 | 5 | ⬜ G4 | **验收金属球** | `acceptance_finish.py` |
@@ -105,6 +106,18 @@ python scripts/calibrate.py --scope texture `
   --texture-trials 24 `
   --texture-vlm-loop --texture-vlm-max-rounds 3 `
   --live-review --no-auto-write
+
+# ── 贴图提取 + 贴图参考校准（方案 B）──
+# 1. 提取干净纹理贴图
+python scripts/extract_texture_map.py --finish-id outdoor_sand
+
+# 2. 使用贴图作为参考重跑校准
+python scripts/calibrate.py --scope texture `
+  --finish-id outdoor_sand `
+  --reference ..\outputs\yili_crops\outdoor_sand\outdoor_sand_crop.png `
+  --use-texture-map `
+  --texture-trials 24 `
+  --no-auto-write
 
 # 定稿
 python scripts/write_feature_best_round.py outdoor_sand

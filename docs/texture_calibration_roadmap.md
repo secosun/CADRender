@@ -1,6 +1,7 @@
 # 纹理校准推进路线图
 
 > **归档日期**：2026-06-24（2026-06-25 增补：业务四维公式、调研报告对齐、纹理双轨）  
+> **2026-07 修订**：纹理贴图提取管线（方案 B）落地为 `extract_texture_map.py` + `--use-texture-map`，从蚁力 crop 提取干净贴图作为程序化拟合目标，提升评分信噪比。  
 > **当前策略**：**纹理是当前最大风险与唯一阻塞项 — 必须先解决 `outdoor_sand` 纹理定稿**，再动场景批量与其余 finish。  
 > **关联文档**：[texture_calibration_design.md](./texture_calibration_design.md)（设计思想）、[outdoor_sand_calibration_backlog.md](./outdoor_sand_calibration_backlog.md)（**唯一执行清单**）、调研报告 `Blender照片转程序化纹理技术调研报告.docx`
 
@@ -200,6 +201,23 @@ CADRender 的业务产出不是「单张纹理拟合最优」，而是 **参数�
 |------|------|------|
 | **A 程序化** | `build_bakecoat_principled` + M_Bakecoat | 低内存、Object 重复、已 Optuna 校准 |
 | **B 贴图** | `build_texture_pbr_material` + Image + M_PBR_Core | 豆包/AI 无缝图、调研报告 **方案 1** |
+
+#### Phase 3a — 纹理贴图提取（2026-07 新增）
+
+从蚁力色卡 crop 提取干净纹理贴图作为程序化拟合的评分目标：
+
+```
+crop → extract_texture_map.py → _texture_map.png → calibrate.py --use-texture-map → Optuna → preset
+```
+
+| 机制 | 说明 |
+|------|------|
+| 内置提取 | `extract_texture_channels()` + `make_seamless_tile()` + 去噪 + QA 门控 |
+| 外部工具 | `--external` 接入 DeepBump / Substance 3D Sampler 输出 |
+| 评分 | 贴图已经去光照/去噪，走 `preprocess_texture_map()`（轻量归一化） |
+| 定稿 | 提取贴图 fit 最优的程序化参数仍写入 preset（保留程序化优势） |
+
+#### Phase 3b — Image Texture 直出（原有）
 
 贴图通道规范：**勿**同一张 JPEG 同时作 Base Color / Roughness / Bump；coat 以 **Roughness + 极弱 Normal** 为主。
 

@@ -74,6 +74,7 @@ Finish 配置：`blenderworker/blender_mcp_presets/finishes/*.json`
 
 - [统一校准管线](./docs/calibration_pipeline_design.md) — 单入口、三子模块、scope 与场景分工
 - [纹理校准设计思想](./docs/texture_calibration_design.md) — 参考图驱动、生产 bakecoat、对称评分
+- [纹理贴图提取指南](./docs/texture_map_extraction_guide.md) — 从原图提取贴图作为程序化拟合目标
 - [材质校准指南](./docs/material_calibration_guide.md) — PBR 参数校准流程
 - [类目校准指南](./docs/category_calibration_guide.md) — 曝光/灯光/合成/VLM 校准
 
