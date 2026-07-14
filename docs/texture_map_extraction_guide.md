@@ -177,9 +177,41 @@ python scripts/run_texture_cal_round.py `
 | 精调定稿 / 接近天花板 | **贴图 + `--use-texture-map`** |
 | 程序化确实拟合不了 | 直接 B 轨 Image Texture（原 crop 生成贴图后在材质中用） |
 
----
+## 工具边界：AI 贴图工具不集成到项目中
 
-## 常见问题
+生成贴图的 AI 工具（DeepBump、豆包、Stable Diffusion 等）**不应集成到 CADRender 项目本身**。
+
+### 原因
+
+```
+贴图制作:    每个 finish 做 1 次  ───── 一次性资产制作
+校准拟合:    calibrate.py 跑 N 次 ─┐
+生产渲染:    render.py 无限次      ─┴─ 项目主管线（日常运行）
+```
+
+贴图是 **每个 finish 只需生成一次的资产**，不是日常渲染管线的一部分。
+
+### 职责分离
+
+| 层 | 谁做 | 频率 | 是否在项目中 |
+|----|------|------|------------|
+| **AI 生成贴图** | 手动操作 DeepBooth / 豆包网页 | 每个 finish **1 次** | ❌ 独立进行 |
+| `extract_texture_map.py --external` | 导入到标准路径 | 每个 finish **1 次** | ✅ 项目脚本 |
+| `calibrate.py --use-texture-map` | 程序化拟合 | 每个 finish **N 次**（迭代） | ✅ 项目管线 |
+| `render.py` | 生产出图 | **无限次** | ✅ 项目管线 |
+
+### 好处
+
+- **工具链自由**：今天用 DeepBump，明天用 Substance，不影响项目代码
+- **零依赖**：项目不依赖任何 AI 工具运行时
+- **新员工只需装 Blender + Python**，不需要配 AI 环境
+- **CI/CD 不受影响**：不需要在 CI 中安装 Stable Diffusion
+
+### 如果后期需要自动化
+
+即使后期需要批量处理大量 finish，也只需在项目外建一个独立的**数据预处理管线**，输出 PNG 到 `yili_crops/` 目录即可。项目自身的 calibrate/render 管线不变。
+
+---
 
 **Q: 为什么提取的贴图是灰度图？**  
 A: 纹理校准只关心表面起伏和粗糙度，不需要颜色信息。评分器基于 LBP/GLCM/FFT/Sobel 特征，灰度输入足够。

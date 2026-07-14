@@ -378,6 +378,25 @@ python scripts/calibrate.py --scope texture `
 | 适用场景 | 快速验证、首次校准 | 精调定稿、程序化天花板附近 |
 | VLM 闭环对比 | proxy vs 实物照片 | proxy vs 干净贴图 |
 
+### 10.6 工具边界：贴图生成不集成到项目
+
+AI 贴图工具（DeepBump、豆包、Stable Diffusion 等）**不应集成到 CADRender 项目代码中**。
+
+贴图制作是每个 finish **一次性资产生产步骤**，不是日常渲染管线的一部分。保持工具链与项目分离：
+
+| 层 | 操作 | 频率 | 是否在项目中 |
+|----|------|------|------------|
+| AI 生成贴图 | 手动使用网页/桌面工具 | 每 finish **1 次** | ❌ 独立进行 |
+| `extract_texture_map.py --external` | 导入到标准路径 | 每 finish **1 次** | ✅ 项目脚本 |
+| `calibrate.py --use-texture-map` | 程序化拟合 | 每 finish N 次 | ✅ 项目管线 |
+| `render.py` | 生产出图 | 无限次 | ✅ 项目管线 |
+
+好处：
+- **工具链自由**：今天用 DeepBump，明天用 Substance，不影响项目
+- **零依赖**：项目不依赖任何 AI 工具运行时
+- **新员工只需装 Blender + Python**，不需要配 AI 环境
+- 即使后期需要批量处理，也只需在项目外建独立的数据预处理管线，输出 PNG 到 `yili_crops/` 即可
+
 ## 与材质校准的关系
 
 ```
